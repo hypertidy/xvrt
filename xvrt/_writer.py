@@ -106,6 +106,17 @@ def write_mdim_vrt(
         )
     (data_var,) = data_vars
 
+    # Early concat_dim validation with a useful hint. Catches case mismatches
+    # ("time" vs "Time") before size resolution walks off looking for a
+    # nonexistent dim on every source.
+    if composition in ("stack", "concat"):
+        available = tuple(ds[data_var].dims)
+        if concat_dim not in available:
+            raise VrtWriterError(
+                f"concat_dim={concat_dim!r} is not a dim of "
+                f"ds[{data_var!r}]. Available dims: {available}."
+            )
+
     sources_norm = normalise_sources(
         sources,
         default_array=data_var,
@@ -336,8 +347,8 @@ def _resolve_concat_sizes(
 
     # 3. Try ds chunks along the concat axis.
     da = ds[data_var]
-    if concat_dim in da.dims:
-        axis = da.dims.index(concat_dim)
+    axis = da.dims.index(concat_dim) if concat_dim in da.dims else None
+    if axis is not None:
         chunks = da.chunks  # tuple-of-tuples, or None
         if chunks is not None:
             per_axis = chunks[axis]
@@ -345,6 +356,30 @@ def _resolve_concat_sizes(
                 for i, cs in enumerate(per_axis):
                     if resolved_sizes[i] is None:
                         resolved_sizes[i] = int(cs)
+
+    # 3.5. Uniform guess: if the total divides evenly by n_sources and we
+    # still don't know sizes, assume each source contributes total/n along
+    # concat_dim. Fires for daily-files-one-timestep-each patterns (OISST
+    # etc). Warns — this is a guess, not a fact.
+    if any(sz is None for sz in resolved_sizes) and axis is not None:
+        total = int(ds.sizes[concat_dim])
+        if total % n == 0:
+            uniform = total // n
+            # Only apply to slots that are still None.
+            applied = False
+            for i in range(n):
+                if resolved_sizes[i] is None:
+                    resolved_sizes[i] = uniform
+                    applied = True
+            if applied:
+                import warnings
+                warnings.warn(
+                    f"assuming {uniform} element(s) per source along "
+                    f"{concat_dim!r} ({total} total / {n} sources). This is "
+                    "a guess based on even divisibility; pass sizes=... if "
+                    "sources contribute unequally.",
+                    UserWarning, stacklevel=3,
+                )
 
     # 4. Fallback: open each source without a size, read its concat dim.
     if any(sz is None for sz in resolved_sizes):
@@ -386,8 +421,9 @@ def _open_and_read_size(target: str, concat_dim: str, index: int) -> int:
                 if concat_dim not in sds.sizes:
                     raise VrtWriterError(
                         f"source #{index} ({target}): concat dim "
-                        f"{concat_dim!r} not found. Pass sizes= or dict-form "
-                        "sources with size= to override."
+                        f"{concat_dim!r} not found. Available dims in this "
+                        f"source: {tuple(sds.sizes)}. Pass sizes= or "
+                        "dict-form sources with size= to override."
                     )
                 return int(sds.sizes[concat_dim])
         except VrtWriterError:
@@ -714,7 +750,7 @@ def _emit_data_array(
         X.sub(arr, "DimensionRef", ref=d)
 
     if block_size is not None:
-        X.sub(arr, "BlockSize", text=X.int_list(block_size))
+        X.sub(arr, "BlockSize", text=X.comma_list(block_size))
 
     if crs_wkt:
         # Spatial axis mapping: GDAL convention is "2,1" when

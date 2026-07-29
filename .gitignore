@@ -6,3 +6,4 @@
 .quarto
 xvrt.Rproj
 *.tar.gz
+.positai

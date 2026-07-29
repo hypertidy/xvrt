@@ -72,6 +72,47 @@ def test_stack_happy(tmp_path):
     assert offsets == ["0,0,0", "1,0,0", "2,0,0"]
 
 
+def test_block_size_is_comma_separated(tmp_path):
+    """<BlockSize> takes comma-separated ints, matching GDAL mdim's
+    BLOCKSIZE=bs0,bs1,...,bsN convention and <DestSlab offset>. Space
+    separation (the xs:list XSD default) silently misparses."""
+    ds, paths = _stack_ds(tmp_path, n=2)
+    out = write_mdim_vrt(
+        ds, [str(p) for p in paths], tmp_path / "bs.vrt",
+        composition="stack", concat_dim="time", crs=WKT,
+        block_size=[1, 4, 6],
+    )
+    root = ET.parse(out).getroot()
+    bs = [el.text for el in root.iter("BlockSize")]
+    assert bs, "expected at least one <BlockSize>"
+    for text in bs:
+        assert "," in text and " " not in text, (
+            f"<BlockSize> must be comma-separated, got {text!r}"
+        )
+
+
+def test_concat_dim_case_mismatch_clear_error(tmp_path):
+    """Case mismatch on concat_dim ('time' vs 'Time') fails up front with
+    the available dims listed, not after walking into size resolution."""
+    # Build a ds whose dim is "Time" (capital T), mimicking BRAN.
+    ny, nx = 4, 6
+    nt = 3
+    t = np.arange(nt, dtype=np.float64)
+    ds = xr.Dataset(
+        {"temp": (("Time", "y", "x"), np.zeros((nt, ny, nx), dtype=np.float32))},
+        coords={"Time": ("Time", t, {"units": "days since 2020-01-01"}),
+                "y": ("y", np.linspace(-10, 10, ny)),
+                "x": ("x", np.linspace(140, 150, nx))},
+    )
+    p = tmp_path / "bran_like.nc"
+    ds.to_netcdf(p)
+
+    with pytest.raises(VrtWriterError,
+                        match=r"concat_dim='time'.*Available dims.*Time"):
+        write_mdim_vrt(ds, [str(p)], tmp_path / "e.vrt",
+                        composition="concat", concat_dim="time", crs=WKT)
+
+
 def test_concat_happy(tmp_path):
     ds, paths = _concat_ds(tmp_path, per=3, n_sources=2)
     out = write_mdim_vrt(
@@ -218,12 +259,19 @@ def test_concat_auto_size_from_opening_sources(tmp_path):
 
 def test_concat_unopenable_sources_error_message(tmp_path):
     """When the source is unreachable and no sizes hint exists, the error
-    message suggests sizes= / dict-form rather than parroting the IO error."""
-    ds, paths = _concat_ds(tmp_path, per=3, n_sources=2)
-    # Point at nonexistent paths with no chunk info to reuse.
+    message suggests sizes= / dict-form rather than parroting the IO error.
+
+    Uses total=5 with 2 sources so step 3.5 (uniform guess) cannot apply
+    (5 % 2 != 0), forcing us into the file-open fallback."""
+    # Build ds with 5 timesteps from 2 real files of sizes 2 and 3.
+    p0 = _make_nc(tmp_path, 0, nt=2)
+    p1 = _make_nc(tmp_path, 2, nt=3)
+    ds_loaded = xr.concat(
+        [xr.open_dataset(p0, decode_times=False),
+         xr.open_dataset(p1, decode_times=False)], dim="time",
+    ).load()
+    # Point at nonexistent paths — sizes must come from step 4 (which will fail).
     bad = [str(tmp_path / "nope_0.nc"), str(tmp_path / "nope_1.nc")]
-    # Drop dask chunking so step 3 is skipped and we fall straight to step 4.
-    ds_loaded = ds.load()
     with pytest.raises(VrtWriterError, match="sizes="):
         write_mdim_vrt(ds_loaded, bad, tmp_path / "u.vrt",
                         composition="concat", concat_dim="time", crs=WKT)
