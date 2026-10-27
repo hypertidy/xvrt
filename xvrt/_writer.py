@@ -36,8 +36,14 @@ def write_mdim_vrt(
     coord_mode: CoordMode | Mapping[str, CoordMode] = "auto",
     inline_threshold: int = 10_000,
     require_crs: bool = False,
+    variables: Sequence[str] | None = None,
 ) -> Path:
     """Emit a GDAL multidim VRT from an xarray Dataset.
+
+    Every data variable becomes an ``<Array>`` in one VRT (OISST-style files
+    with sst/anom/err/ice give one VRT with four arrays). Each source file is
+    expected to hold every variable; variables that lack the composition dim
+    (static fields such as a land mask) are read from the first source.
 
     Parameters
     ----------
@@ -45,7 +51,10 @@ def write_mdim_vrt(
         The Dataset whose shape / dims / coords / data-vars describe the
         desired virtual composition.
     sources
-        ``list[str | Path | dict]``.
+        ``list[str | Path | dict]``. Dict form: ``{"path": ..., "size": N,
+        "array": "/name"}``; with several variables use ``"arrays": {var:
+        "/name", ...}`` instead of ``"array"`` for any renames (variables
+        not listed default to their own name).
     path
         Output ``.vrt`` path.
     composition
@@ -71,6 +80,10 @@ def write_mdim_vrt(
         ``"auto"`` (default) | ``"inline"`` | ``"source"`` or dict per coord.
     inline_threshold
         In auto mode, coords with ``size <= threshold`` go inline.
+    variables
+        Subset of ``ds.data_vars`` to write, in order. Default: all data vars
+        except CF ``grid_mapping`` containers (their content is carried by
+        ``<SRS>``).
     require_crs
         When True, raise :class:`VrtWriterError` if no CRS can be
         determined. Default False (warn-and-omit); matches the reality of
@@ -91,68 +104,61 @@ def write_mdim_vrt(
 
     path = Path(path)
 
-    # Normalise sources. For stack, the new dim is concat_dim and each source
-    # contributes one element; for concat it exists already on ds.
-    data_vars = list(ds.data_vars)
-    if len(data_vars) == 0:
-        raise VrtWriterError("ds has no data_vars")
-    if len(data_vars) > 1:
-        # v0 keeps it simple — one data_var per call. Multi-var would need
-        # per-var source dispatch; punt to v0.5.
-        raise NotImplementedError(
-            f"ds has multiple data_vars ({data_vars}); v0 supports a single "
-            "data_var per write call. Split the Dataset with ds[[var]] and "
-            "write once per variable."
-        )
-    (data_var,) = data_vars
+    data_vars = _select_data_vars(ds, variables)
 
     # Early concat_dim validation with a useful hint. Catches case mismatches
     # ("time" vs "Time") before size resolution walks off looking for a
     # nonexistent dim on every source.
-    if composition in ("stack", "concat"):
-        available = tuple(ds[data_var].dims)
-        if concat_dim not in available:
-            raise VrtWriterError(
-                f"concat_dim={concat_dim!r} is not a dim of "
-                f"ds[{data_var!r}]. Available dims: {available}."
-            )
+    comp_vars = [v for v in data_vars if concat_dim in ds[v].dims]
+    if not comp_vars:
+        available = tuple(dict.fromkeys(d for v in data_vars for d in ds[v].dims))
+        raise VrtWriterError(
+            f"concat_dim={concat_dim!r} is not a dim of any data var "
+            f"({data_vars}). Available dims: {available}."
+        )
+    lead = comp_vars[0]  # the variable used for size / rank inference
 
     sources_norm = normalise_sources(
         sources,
-        default_array=data_var,
+        default_array=lead,
         vrt_path=path,
         composition=composition,
+        n_vars=len(data_vars),
     )
 
     # Resolve per-source sizes for concat (auto-discover before checking).
     if composition == "concat":
         sources_norm = _resolve_concat_sizes(
-            ds=ds, data_var=data_var, concat_dim=concat_dim,
+            ds=ds, data_var=lead, concat_dim=concat_dim,
             sources=sources_norm, explicit=sizes,
         )
 
     # R7: array-name disjointness.
     _check_array_name_collisions(ds)
 
-    # R4: CRS — strict or soft.
-    crs_wkt = _resolve_crs(ds, data_var, crs, require=require_crs)
+    # R4: CRS, per variable; strict or soft.
+    crs_by_var = _resolve_crs_all(ds, data_vars, crs, require=require_crs)
 
     # Composition-specific dim / size arithmetic.
     if composition == "stack":
-        _check_stack(ds, data_var, sources_norm, concat_dim)
-        sources_norm = _resolve_stack_has_dim(sources_norm, concat_dim)
+        _check_stack(ds, lead, sources_norm, concat_dim)
+        sources_norm = _resolve_stack_has_dim(
+            sources_norm, concat_dim, _array_for(sources_norm[0], lead, data_vars)
+        )
     elif composition == "concat":
-        _check_concat(ds, data_var, sources_norm, concat_dim)
+        _check_concat(ds, lead, sources_norm, concat_dim)
+
+    block_sizes = _resolve_block_sizes(ds, data_vars, block_size)
 
     # Build XML.
     root = _build_vrt(
         ds=ds,
-        data_var=data_var,
+        data_vars=data_vars,
         sources=sources_norm,
         composition=composition,
         concat_dim=concat_dim,
-        crs_wkt=crs_wkt,
-        block_size=block_size,
+        crs_by_var=crs_by_var,
+        block_sizes=block_sizes,
         coord_mode=coord_mode,
         inline_threshold=inline_threshold,
     )
@@ -228,6 +234,7 @@ def _resolve_crs(
     crs_arg: str | None,
     *,
     require: bool = False,
+    warn: bool = True,
 ) -> str | None:
     if crs_arg is not None:
         return crs_arg
@@ -262,13 +269,15 @@ def _resolve_crs(
             "(require_crs=True mode.)"
         )
 
+    if not warn:
+        return None
     import warnings
     warnings.warn(
         "CRS not supplied and not detected; emitting VRT without <SRS>. "
         "Pass crs=<WKT> to attach one, or require_crs=True to make this an "
         "error.",
         UserWarning,
-        stacklevel=3,
+        stacklevel=4,
     )
     return None
 
@@ -307,7 +316,9 @@ def _check_stack(
         )
 
 
-def _resolve_stack_has_dim(sources: list[Source], new_dim: str) -> list[Source]:
+def _resolve_stack_has_dim(
+    sources: list[Source], new_dim: str, array: str | None = None
+) -> list[Source]:
     """Record, per stack source, whether it already carries ``new_dim``.
 
     "Stack" covers two source shapes: 2D slices that lack the stack dim
@@ -322,7 +333,7 @@ def _resolve_stack_has_dim(sources: list[Source], new_dim: str) -> list[Source]:
     if all("has_dim" in s.extra for s in sources):
         return sources
     probe = next(s for s in sources if "has_dim" not in s.extra)
-    has = _source_has_dim(probe.original or probe.path, probe.array, new_dim)
+    has = _source_has_dim(probe.original or probe.path, array or probe.array, new_dim)
     return [s if "has_dim" in s.extra
             else replace(s, extra={**s.extra, "has_dim": has})
             for s in sources]
@@ -529,22 +540,22 @@ def _check_concat(
 def _build_vrt(
     *,
     ds: xr.Dataset,
-    data_var: str,
+    data_vars: list[str],
     sources: list[Source],
     composition: Composition,
     concat_dim: str | None,
-    crs_wkt: str | None,
-    block_size: Sequence[int] | Mapping[str, Sequence[int]] | None,
+    crs_by_var: Mapping[str, str | None],
+    block_sizes: Mapping[str, list[int] | None],
     coord_mode: CoordMode | Mapping[str, CoordMode],
     inline_threshold: int,
 ) -> ET.Element:
-    da = ds[data_var]
-    dims = list(da.dims)
+    # Union of the data vars' dims, in order of first appearance.
+    dims = list(dict.fromkeys(d for v in data_vars for d in ds[v].dims))
 
     root = ET.Element("VRTDataset")
     grp = X.sub(root, "Group", name="/")
 
-    # <Dimension> elements — in the order the data-var dims appear.
+    # <Dimension> elements.
     for d in dims:
         size = ds.sizes[d]
         attrs: dict[str, Any] = {"name": d, "size": size}
@@ -570,19 +581,77 @@ def _build_vrt(
             composition=composition, concat_dim=concat_dim,
         )
 
-    # Data-var <Array>.
-    _emit_data_array(
-        grp,
-        da=da,
-        name=data_var,
-        sources=sources,
-        composition=composition,
-        concat_dim=concat_dim,
-        crs_wkt=crs_wkt,
-        block_size=_resolve_block_size(da, block_size, data_var),
-    )
+    # Data-var <Array>s.
+    for v in data_vars:
+        _emit_data_array(
+            grp,
+            da=ds[v],
+            name=v,
+            sources=sources,
+            arrays=[_array_for(s, v, data_vars) for s in sources],
+            composition=composition,
+            concat_dim=concat_dim,
+            crs_wkt=crs_by_var.get(v),
+            block_size=block_sizes.get(v),
+        )
 
     return root
+
+
+def _select_data_vars(ds: xr.Dataset, variables: Sequence[str] | None) -> list[str]:
+    if variables is not None:
+        if isinstance(variables, str):
+            variables = [variables]
+        missing = [v for v in variables if v not in ds.data_vars]
+        if missing:
+            raise VrtWriterError(
+                f"variables={missing} not in ds.data_vars ({list(ds.data_vars)})"
+            )
+        out = list(variables)
+    else:
+        gm = {ds[v].attrs.get("grid_mapping") for v in ds.data_vars}
+        out = [v for v in ds.data_vars if v not in gm]
+    if not out:
+        raise VrtWriterError("ds has no data_vars")
+    return out
+
+
+def _array_for(src: Source, var: str, data_vars: Sequence[str]) -> str:
+    """The <SourceArray> name for ``var`` in ``src``."""
+    arrays = src.extra.get("arrays")
+    if isinstance(arrays, Mapping) and var in arrays:
+        return str(arrays[var])
+    if len(data_vars) == 1:
+        return src.array
+    return var
+
+
+def _resolve_crs_all(
+    ds: xr.Dataset,
+    data_vars: Sequence[str],
+    crs_arg: str | None,
+    *,
+    require: bool,
+) -> dict[str, str | None]:
+    """CRS per variable; ``<SRS>`` only goes on variables with horizontal dims.
+
+    A variable gets an SRS when both an X and a Y dim are detectable on it.
+    If no variable has detectable X/Y dims, every variable of rank >= 2 gets
+    it (the pre-multi-var behaviour, for unconventionally named grids).
+    """
+    found = {v: _resolve_crs(ds, v, crs_arg, require=False, warn=False)
+             for v in data_vars}
+    if not any(found.values()):
+        # Re-run on the first var for the original warn/raise behaviour.
+        _resolve_crs(ds, data_vars[0], None, require=require, warn=True)
+        return {v: None for v in data_vars}
+    fallback = next(w for w in found.values() if w)
+    spatial = {v for v in data_vars
+               if {"X", "Y"} <= {_dim_axis_tag(ds[v], d) for d in ds[v].dims}}
+    if not spatial:
+        spatial = {v for v in data_vars if ds[v].ndim >= 2}
+    return {v: (found[v] or fallback) if v in spatial else None
+            for v in data_vars}
 
 
 def _axis_role(ds: xr.Dataset, dim: str) -> tuple[str | None, str | None]:
@@ -867,6 +936,7 @@ def _emit_data_array(
     da: xr.DataArray,
     name: str,
     sources: list[Source],
+    arrays: list[str] | None = None,
     composition: Composition,
     concat_dim: str | None,
     crs_wkt: str | None,
@@ -912,6 +982,7 @@ def _emit_data_array(
     # <Source> composition.
     _emit_sources(
         arr, sources=sources, da=da,
+        arrays=arrays or [s.array for s in sources],
         composition=composition, concat_dim=concat_dim,
     )
 
@@ -990,6 +1061,24 @@ def _srs_axis_order(wkt: str) -> list[str] | None:
     return out if sorted(out) == ["X", "Y"] else None
 
 
+def _resolve_block_sizes(
+    ds: xr.Dataset,
+    data_vars: Sequence[str],
+    block_size: Sequence[int] | Mapping[str, Sequence[int]] | None,
+) -> dict[str, list[int] | None]:
+    """Per-variable block sizes. A plain sequence applies to every variable
+    of matching rank; a mismatch is an error rather than a silent skip."""
+    if block_size is not None and not isinstance(block_size, Mapping):
+        bad = [v for v in data_vars if ds[v].ndim != len(block_size)]
+        if bad:
+            raise VrtWriterError(
+                f"block_size={list(block_size)} has {len(block_size)} entries "
+                f"but {bad} have a different rank. Pass a dict keyed by "
+                "variable name."
+            )
+    return {v: _resolve_block_size(ds[v], block_size, v) for v in data_vars}
+
+
 def _resolve_block_size(
     da: xr.DataArray,
     block_size: Sequence[int] | Mapping[str, Sequence[int]] | None,
@@ -1013,19 +1102,32 @@ def _emit_sources(
     *,
     sources: list[Source],
     da: xr.DataArray,
+    arrays: list[str],
     composition: Composition,
     concat_dim: str | None,
 ) -> None:
     dims = list(da.dims)
+
+    if concat_dim not in dims:
+        # Static variable (no composition dim): the first source supplies it.
+        s = sources[0]
+        src_el = X.sub(arr, "Source")
+        X.sub(src_el, "SourceFilename", text=s.path,
+              relativeToVRT=s.relative_to_vrt)
+        X.sub(src_el, "SourceArray", text=_full_array_name(arrays[0]))
+        if dims:
+            X.sub(src_el, "DestSlab", offset=X.comma_list([0] * len(dims)))
+        return
+
     # Which axis participates in the composition.
-    comp_axis = dims.index(concat_dim) if concat_dim else 0
+    comp_axis = dims.index(concat_dim)
     offset_so_far = 0
-    for s in sources:
+    for s, array in zip(sources, arrays):
         size_along = 1 if composition == "stack" else int(s.size)  # type: ignore[arg-type]
         src_el = X.sub(arr, "Source")
         X.sub(src_el, "SourceFilename", text=s.path,
               relativeToVRT=s.relative_to_vrt)
-        X.sub(src_el, "SourceArray", text=_full_array_name(s.array))
+        X.sub(src_el, "SourceArray", text=_full_array_name(array))
         if composition == "stack" and not s.extra.get("has_dim", False):
             # A stacked source lacks the new dim. GDAL refuses to read a
             # source whose rank differs from the destination ("Inconsistent

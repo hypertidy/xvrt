@@ -41,6 +41,9 @@ class VrtAccessor:
         block_size: Any = None,
         coord_mode: CoordMode | Any = "auto",
         inline_threshold: int = 10_000,
+        sizes: Sequence[int] | None = None,
+        require_crs: bool = False,
+        variables: Sequence[str] | None = None,
     ) -> Path:
         """Method-call form of :func:`xvrt.write_mdim_vrt`.
 
@@ -56,4 +59,7 @@ class VrtAccessor:
             block_size=block_size,
             coord_mode=coord_mode,
             inline_threshold=inline_threshold,
+            sizes=sizes,
+            require_crs=require_crs,
+            variables=variables,
         )
