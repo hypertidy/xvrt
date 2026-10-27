@@ -7,6 +7,8 @@ website:
   description: "Write GDAL multidimensional VRT from xarray Datasets and STAC catalogues."
   site-url: https://rgdal-dev.github.io/xvrt/
   repo-url: https://github.com/rgdal-dev/xvrt
+  repo-subdir: docs
+  repo-branch: main
   repo-actions: [source, issue]
   page-navigation: true
   navbar:
