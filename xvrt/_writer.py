@@ -58,15 +58,15 @@ def write_mdim_vrt(
     path
         Output ``.vrt`` path.
     composition
-        ``"stack"`` | ``"concat"`` | ``"mosaic"``. **v0 implements stack
-        and concat**; mosaic raises ``NotImplementedError``.
+        ``"stack"`` | ``"concat"``. (``"mosaic"`` is reserved and raises
+        ``NotImplementedError``.)
     concat_dim
         Required for stack (new dim name) and concat (existing dim name).
     crs
         WKT string. If omitted, we look at ``ds[dv].attrs["crs_wkt"]`` /
         ``ds[dv].rio.crs`` / CF ``grid_mapping``; if still absent the
-        writer emits no ``<SRS>`` and warns. Pass ``require_crs=True`` for
-        strict R4 behaviour.
+        writer emits no ``<SRS>`` and warns. Pass ``require_crs=True`` to make
+        that an error.
     sizes
         Convenience shortcut for concat: ``list[int]`` of per-source sizes
         along ``concat_dim``. If not given, we try (in order):
@@ -75,7 +75,8 @@ def write_mdim_vrt(
         opening each source to read ``.sizes[concat_dim]``.
     block_size
         Sequence matching array dim order, or dict keyed by data-var name.
-        ``None`` falls back to ``ds[dv].chunks`` when present.
+        ``None`` falls back to the dask chunks, then to
+        ``encoding["preferred_chunks"]`` / ``encoding["chunksizes"]``.
     coord_mode
         ``"auto"`` (default) | ``"inline"`` | ``"source"`` or dict per coord.
     inline_threshold
@@ -85,7 +86,7 @@ def write_mdim_vrt(
         except CF ``grid_mapping`` containers (their content is carried by
         ``<SRS>``).
     require_crs
-        When True, raise :class:`VrtWriterError` if no CRS can be
+        When True, raise ``VrtWriterError`` if no CRS can be
         determined. Default False (warn-and-omit); matches the reality of
         ocean NetCDFs and other CRS-less sources.
     """

@@ -141,9 +141,14 @@ def _read_items(items) -> list[Mapping[str, Any]]:
             ) from exc
         src = str(items)
         if src.startswith(("http://", "https://")):
-            import urllib.request
             import io
-            with urllib.request.urlopen(src) as resp:  # noqa: S310
+            import urllib.request
+
+            from . import __version__
+
+            # Some hosts refuse urllib's default User-Agent (HTTP 403).
+            req = urllib.request.Request(src, headers={"User-Agent": f"xvrt/{__version__}"})
+            with urllib.request.urlopen(req) as resp:  # noqa: S310
                 return pq.read_table(io.BytesIO(resp.read())).to_pylist()
         return pq.read_table(src).to_pylist()
     return [it.to_dict() if hasattr(it, "to_dict") else it for it in items]
