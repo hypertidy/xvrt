@@ -1,0 +1,81 @@
+---
+title: "From a STAC catalogue"
+---
+
+```{python}
+#| echo: false
+import sys, warnings
+sys.path.insert(0, "..")
+warnings.simplefilter("ignore", UserWarning)
+```
+
+When a collection is catalogued with the
+[projection](https://github.com/stac-extensions/projection) and
+[raster](https://github.com/stac-extensions/raster) STAC extensions, the
+catalogue already says everything the VRT needs. `from_stac()` uses it
+directly and opens no file:
+
+| VRT element | catalogue field |
+|---|---|
+| grid (dims, x/y coordinates) | `proj:shape`, `proj:transform` |
+| `<SRS>` | `proj:epsg` / `proj:code` / `proj:wkt2` |
+| time coordinate | item `datetime` |
+| one array per asset | asset keys with `raster:bands` |
+| dtype, nodata, scale, offset, unit | `raster:bands[0]` |
+| sources | asset `href`, placed at the item's time position |
+
+```{python}
+from xvrt import from_stac
+from _fixtures import geotiffs, WKT_4326
+
+tifs = geotiffs(n=3)
+items = [
+    {
+        "id": f"day{i}",
+        "properties": {
+            "datetime": f"2026-01-0{i + 1}T00:00:00Z",
+            "proj:shape": [3, 4],
+            "proj:transform": [1.0, 0, 145.0, 0, -1.0, -42.0, 0, 0, 1],
+            "proj:wkt2": WKT_4326,
+        },
+        "assets": {
+            "analysed_sst": {
+                "href": str(p),
+                "raster:bands": [{"data_type": "int16", "nodata": -32768,
+                                  "scale": 0.001, "offset": 25.0, "unit": "celsius"}],
+            }
+        },
+    }
+    for i, p in enumerate(tifs)
+]
+out = from_stac(items, tifs[0].parent / "catalogue.vrt")
+
+from osgeo import gdal
+gdal.UseExceptions()
+a = gdal.OpenEx(str(out), gdal.OF_MULTIDIM_RASTER).GetRootGroup().OpenMDArray("analysed_sst")
+print([d.GetSize() for d in a.GetDimensions()], a.GetScale(), a.GetOffset(), a.GetUnit())
+a.GetUnscaled().ReadAsArray()[:, 0, :]
+```
+
+`items` may be a list of STAC item dicts (nested `properties` or flat
+stac-geoparquet rows; `pystac.Item` objects work too) or the path or URL of a
+stac-geoparquet file.
+
+## What it checks
+
+The catalogue is trusted, but not blindly:
+
+- **One grid.** Items on different grids are refused (no resampling).
+- **One item per time.** Duplicate datetimes are refused.
+- **One storage description per asset.** If dtype, nodata, scale or offset
+  change between items the asset is refused, because one array needs one
+  decoding. A unit missing from some items is filled from the others;
+  conflicting units warn and use the most common.
+- **Missing assets are gaps.** An item without an asset leaves nodata at its
+  time position, so a variable that starts later than the others needs no
+  special handling.
+
+The template Dataset it builds uses zero-memory placeholders
+(`numpy.broadcast_to`), so a catalogue of thousands of full-resolution days
+costs nothing to describe. See the [GHRSST MUR example](../examples/ghrsst-mur.qmd)
+for 8913 days of five variables.

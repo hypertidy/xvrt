@@ -1,0 +1,47 @@
+---
+title: "Reference"
+---
+
+Generated from the package docstrings.
+
+````{python}
+#| echo: false
+#| output: asis
+import inspect
+
+import xvrt
+
+def render(obj, name):
+    sig = str(inspect.signature(obj)).replace(", *,", ",\n    *,")
+    print(f"## `{name}`\n")
+    print("```python")
+    print(f"{name}{sig}")
+    print("```\n")
+    doc = inspect.getdoc(obj) or ""
+    # numpydoc sections -> bold labels; parameter names -> code
+    out, section = [], None
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if stripped and set(stripped) == {"-"}:
+            continue
+        if stripped in ("Parameters", "Returns", "Raises", "Notes", "Examples"):
+            section = stripped
+            out.append(f"\n**{stripped}**\n")
+            continue
+        if section in ("Parameters", "Raises") and line and not line.startswith(" "):
+            out.append(f"\n`{stripped}`\n:   ")
+            continue
+        out.append(stripped if section in ("Parameters", "Raises") else line)
+    print("\n".join(out).replace("\n:   \n", "\n:   "))
+    print()
+
+for name in ("write_mdim_vrt", "from_stac", "encode_datetime_coord"):
+    render(getattr(xvrt, name), name)
+
+print("## `VrtWriterError`\n")
+print(inspect.getdoc(xvrt.VrtWriterError))
+print()
+print("## Accessor\n")
+print("`import xvrt.accessor` registers `Dataset.vrt.write_mdim(path, sources=..., ...)`, "
+      "which forwards its arguments to `write_mdim_vrt`.")
+````

@@ -1,0 +1,55 @@
+---
+title: "CRS and the axis mapping"
+---
+
+```{python}
+#| echo: false
+import sys, warnings
+sys.path.insert(0, "..")
+warnings.simplefilter("ignore", UserWarning)
+```
+
+## Where the CRS comes from
+
+`crs=` (WKT) wins. Otherwise xvrt looks on each data variable for `crs_wkt`,
+`spatial_ref` or `esri_pe_string` attributes, then rioxarray's `.rio.crs` if
+installed, then the CF `grid_mapping` variable's `crs_wkt`. If nothing is
+found it writes no `<SRS>` and warns; `require_crs=True` makes that an error.
+`<SRS>` is written only on variables with recognisable horizontal (X and Y)
+dimensions.
+
+## The axis mapping
+
+Next to the WKT, `<SRS>` carries `dataAxisToSRSAxisMapping`: for each axis of
+the CRS, in the order its WKT declares them, the 1-based number of the array
+dimension that holds it. It counts every array dimension, time included.
+
+For a `(time, lat, lon)` array:
+
+- EPSG:4326 as WKT declares latitude first, then longitude. Latitude is on
+  dimension 2, longitude on dimension 3: the mapping is `2,3`.
+- A projected CRS (easting first, then northing) maps easting to dimension 3
+  (x) and northing to dimension 2 (y): `3,2`.
+
+xvrt computes this from the WKT's `AXIS[...]` entries and the dimensions it
+recognises as X and Y (from CF `axis` / `standard_name`, or names such as
+`lat`, `lon`, `x`, `y`). A wrong or missing mapping is easy to miss: GDAL
+accepts it, then reports a broken mapping for a 2D slice of the array.
+
+```{python}
+import xarray as xr
+from osgeo import gdal
+from xvrt import write_mdim_vrt
+from _fixtures import daily_netcdf, WKT_4326
+
+gdal.UseExceptions()
+paths = daily_netcdf(n=2)
+ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+out = write_mdim_vrt(ds, paths, paths[0].parent / "crs.vrt",
+                     composition="concat", concat_dim="time", crs=WKT_4326)
+vrt = gdal.OpenEx(str(out), gdal.OF_MULTIDIM_RASTER)
+a = vrt.GetRootGroup().OpenMDArray("sst")
+print("3D array:", a.GetSpatialRef().GetDataAxisToSRSAxisMapping())
+print("one day as a 2D raster:",
+      a.GetView("[0,:,:]").AsClassicDataset(1, 0).GetSpatialRef().GetDataAxisToSRSAxisMapping())
+```

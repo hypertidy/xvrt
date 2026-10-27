@@ -1,0 +1,96 @@
+---
+title: "Get started"
+---
+
+```{python}
+#| echo: false
+import sys
+sys.path.insert(0, ".")
+```
+
+This page takes a set of daily NetCDF files, opens them with xarray, writes a
+VRT describing them as one cube, and reads it back through GDAL.
+
+## Some files
+
+Four daily files of sea surface temperature, each `(time, lat, lon)` with one
+time step, stored as packed `int16` (the usual layout for gridded daily
+products). The helper writes them to a temporary folder.
+
+```{python}
+import xarray as xr
+from _fixtures import daily_netcdf
+
+paths = daily_netcdf(n=4)
+[p.name for p in paths]
+```
+
+## Open them as usual
+
+```{python}
+ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+ds
+```
+
+xarray has decoded the packing (the values are floats) and the times
+(`datetime64`), and remembers how they were stored in `.encoding`.
+
+## Write the VRT
+
+`write_mdim_vrt` needs the Dataset, the source files in order, an output path,
+and how the files combine: here each file contributes its slice of an existing
+`time` dimension, which is `composition="concat"`.
+
+```{python}
+from xvrt import write_mdim_vrt
+
+out = write_mdim_vrt(
+    ds, paths, paths[0].parent / "sst.vrt",
+    composition="concat", concat_dim="time",
+)
+print(out.read_text())
+```
+
+A few things to notice:
+
+- The data array is declared `Int16` with `<Scale>`, `<Offset>` and
+  `<NoDataValue>`: the VRT reads the stored bytes, and GDAL applies the
+  decoding, so nothing is lost or double-applied. See
+  [Packed data](guide/packed-data.qmd).
+- Regularly spaced coordinates are written as `<RegularlySpacedValues>`
+  (start and step), not as lists.
+- Time is written back in its original CF units, origin time of day
+  included.
+- Each `<Source>` states its extent (`<SourceSlab>`) and where it lands
+  (`<DestSlab>`), so GDAL opens only the files a read needs.
+- No CRS was found on this Dataset, so there is no `<SRS>` (xvrt warns). Pass
+  `crs=` or see [CRS](guide/crs.qmd).
+
+## Read it back
+
+```{python}
+from osgeo import gdal
+
+gdal.UseExceptions()
+vrt = gdal.OpenEx(str(out), gdal.OF_MULTIDIM_RASTER)
+sst = vrt.GetRootGroup().OpenMDArray("sst")
+print([d.GetName() for d in sst.GetDimensions()], [d.GetSize() for d in sst.GetDimensions()])
+print("scale", sst.GetScale(), "nodata", sst.GetNoDataValueAsDouble(), "unit", sst.GetUnit())
+```
+
+The unscaled values match what xarray shows:
+
+```{python}
+import numpy as np
+
+from_vrt = sst.GetUnscaled().ReadAsArray()
+np.allclose(from_vrt, ds.sst.values)
+```
+
+The same file opens in any tool built on GDAL's multidimensional API, for
+example `gdal mdim info sst.vrt` on the command line, or an xarray backend for
+GDAL:
+
+```{python}
+xr.open_dataset(out, engine="gdalxarray")
+```

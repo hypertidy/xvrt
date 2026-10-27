@@ -1,0 +1,105 @@
+---
+title: "Compositions: stack and concat"
+---
+
+```{python}
+#| echo: false
+import sys, warnings
+sys.path.insert(0, "..")
+warnings.simplefilter("ignore", UserWarning)
+```
+
+A VRT places each source file into a slab of the destination array. xvrt
+supports two ways of laying sources along one dimension.
+
+| | `concat` | `stack` |
+|---|---|---|
+| the dimension | already exists in each file | is new, one position per file |
+| each file contributes | its own length along it (1 or more) | exactly one position |
+| typical input | daily or monthly NetCDF with a `time` dim | 2D files, one per date or level |
+
+## concat: files that already have the dimension
+
+```{python}
+import xarray as xr
+from xvrt import write_mdim_vrt
+from _fixtures import daily_netcdf
+
+paths = daily_netcdf(n=3)
+ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+out = write_mdim_vrt(ds, paths, paths[0].parent / "concat.vrt",
+                     composition="concat", concat_dim="time")
+```
+
+xvrt needs to know how many steps each file contributes. It works it out in
+this order: the `sizes=` argument; a `size` in dict-form sources; the
+Dataset's dask chunks when there is one chunk per file (the
+`open_mfdataset` default); an even split when the total divides by the number
+of files (with a warning, because it is a guess); and finally opening each
+file to read its length. Passing `sizes=` is the explicit route:
+
+```{python}
+out = write_mdim_vrt(ds, paths, paths[0].parent / "concat.vrt",
+                     composition="concat", concat_dim="time", sizes=[1, 1, 1])
+```
+
+The concat coordinate must be strictly monotonic, and by default it is
+written inline (or as start and step when regular). `coord_mode={"time":
+"source"}` instead reads it from every file, slab by slab, which only makes
+sense when all files store it in the same units.
+
+## stack: one file per position of a new dimension
+
+Here the files are 2D and the Dataset gets a new dimension when they are
+combined:
+
+```{python}
+from _fixtures import slices_2d
+
+paths = slices_2d(n=3)
+parts = [xr.open_dataset(p) for p in paths]
+ds = xr.concat(parts, dim="level").assign_coords(level=[0.0, 10.0, 20.0])
+out = write_mdim_vrt(ds, paths, paths[0].parent / "stack.vrt",
+                     composition="stack", concat_dim="level")
+print("\n".join(l for l in out.read_text().splitlines() if "Source" in l or "View" in l)[:900])
+```
+
+A 2D source cannot fill a 3D slab directly (GDAL refuses sources whose rank
+differs from the destination), so each source gets a view that adds the
+length-1 axis: `<SourceView>[newaxis,...]</SourceView>`. Files that already
+carry a length-1 dimension of that name (one time step per file) need no
+view; xvrt checks the first file's metadata to tell the two apart, or you can
+say so with `"has_dim": True` in dict-form sources.
+
+## Gaps: placing sources by index
+
+In a stack, a dict-form source can carry an explicit `"index"`, its position
+along the stack dimension. Positions without a source read as nodata, which
+is how a collection with missing days is described:
+
+```{python}
+from osgeo import gdal
+gdal.UseExceptions()
+
+srcs = [{"path": str(paths[0]), "index": 0}, {"path": str(paths[2]), "index": 2}]
+out = write_mdim_vrt(ds, srcs, paths[0].parent / "gaps.vrt",
+                     composition="stack", concat_dim="level")
+a = gdal.OpenEx(str(out), gdal.OF_MULTIDIM_RASTER).GetRootGroup().OpenMDArray("temp")
+a.ReadAsArray()[:, 0, 0]
+```
+
+Either every source has an index or none does.
+
+## Source forms
+
+Sources are a list of paths or URLs (`http(s)://` becomes `/vsicurl/`,
+`s3://` becomes `/vsis3/`), or dicts:
+
+```python
+{"path": "file.nc", "size": 31}          # concat: steps in this file
+{"path": "file.nc", "array": "/sst"}     # source array name, if it differs
+{"path": "day.tif", "band": 1}           # raster band source (GeoTIFF/COG)
+{"path": "day.tif", "index": 42}         # stack position
+```
+
+Local paths below the VRT's folder are written relative to it.

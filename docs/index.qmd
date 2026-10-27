@@ -1,0 +1,66 @@
+---
+title: "xvrt"
+subtitle: "GDAL multidimensional VRT from xarray Datasets and STAC catalogues"
+---
+
+xvrt writes [GDAL multidimensional VRT](https://gdal.org/en/stable/drivers/raster/vrt_multidimensional.html)
+files: small XML documents that describe a collection of files as one
+n-dimensional dataset. The VRT holds no data. It records which file supplies
+which slab of which array, plus the dimensions, coordinates, CRS, units and
+packing, so any reader of GDAL's multidimensional API opens the whole
+collection as a single cube and reads only the files a request touches.
+
+It is pure Python (no GDAL needed to write) and has two front doors:
+
+- **From xarray.** Open a set of files the way you normally would, then
+  describe the result with `write_mdim_vrt(ds, sources, path)`. The Dataset's
+  dims, coordinates, attributes and encoding say what the cube looks like; the
+  source list says where its pieces live.
+- **From a STAC catalogue.** `from_stac(items, path)` builds the VRT from
+  catalogue fields alone (grid, CRS, datetimes, band storage), without opening
+  a single file.
+
+```{python}
+#| echo: false
+import xvrt
+print(f"xvrt {xvrt.__version__}")
+```
+
+## A recipe, not a payload
+
+Opening a long time series of files is expensive work: coordinates are read,
+dimensions aligned, packing and time decoded. Most tools do this work each
+time and then throw the result away. A VRT keeps it as a portable text
+artifact that GDAL, and anything built on GDAL, can reuse directly. It sits
+between the file collection and the analysis: no bytes are copied, and the
+description can be versioned, shared and inspected like any other text file.
+
+## Install
+
+xvrt is not on PyPI yet. Install from GitHub:
+
+```bash
+pip install "xvrt @ git+https://github.com/rgdal-dev/xvrt"
+```
+
+Requirements are `numpy` and `xarray`. Reading stac-geoparquet needs
+`pyarrow`; turning an EPSG code into WKT needs `pyproj` (or GDAL's Python
+bindings). Reading the result needs GDAL 3.x with multidimensional support.
+
+## Where to go next
+
+- [Get started](get-started.qmd): a set of daily NetCDF files to one VRT, read
+  back through GDAL.
+- The **Guide** covers each feature: compositions, packed data, multiple
+  variables, raster (GeoTIFF/COG) sources, catalogue-driven VRTs and CRS
+  handling.
+- [GHRSST MUR on source.coop](examples/ghrsst-mur.qmd): 8913 days of five
+  variables, built from a STAC catalogue in seconds.
+- [Reference](reference.qmd): every public function.
+
+## Related projects
+
+- [hypertidy/vrtstack](https://github.com/hypertidy/vrtstack) - the R
+  counterpart, stacking raster collections into the same VRT format.
+- [hypertidy/gdalxarray](https://github.com/hypertidy/gdalxarray) - an
+  xarray backend for GDAL; opens these VRTs as xarray Datasets.
