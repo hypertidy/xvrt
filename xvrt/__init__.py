@@ -1,13 +1,10 @@
-"""xvrt — xarray to GDAL multidimensional VRT.
+"""xvrt: write GDAL multidimensional VRT from xarray Datasets and STAC catalogues.
 
-A pure-Python writer. Takes an ``xarray.Dataset`` plus an explicit source
-specification and emits a valid GDAL multidim VRT conforming to the
-``release/3.12`` ``gdalvrt.xsd``.
+A pure-Python writer. ``write_mdim_vrt`` takes an ``xarray.Dataset`` plus the
+source files and emits a GDAL multidim VRT; ``from_stac`` builds one from
+STAC catalogue fields alone. Output validates against GDAL's ``gdalvrt.xsd``.
 
-Parallel to the R package ``vrtstack``. The two are independent
-implementations of the same spec.
-
-Scope and rules: see ``mdim-vrt-writer-plan.md``.
+Documentation: https://rgdal-dev.github.io/xvrt/
 """
 from __future__ import annotations
 
@@ -16,4 +13,4 @@ from ._errors import VrtWriterError
 from ._stac import from_stac
 
 __all__ = ["write_mdim_vrt", "from_stac", "encode_datetime_coord", "VrtWriterError"]
-__version__ = "0.0.1.9000"
+__version__ = "0.1.0"

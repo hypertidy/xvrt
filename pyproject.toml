@@ -1,33 +1,54 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "xvrt"
-version = "0.0.1.9000"
-description = "Write GDAL multidimensional VRT from xarray Datasets (pure Python)."
+dynamic = ["version"]
+description = "Write GDAL multidimensional VRT from xarray Datasets and STAC catalogues (pure Python)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "hypertidy" }]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Michael Sumner", email = "mdsumner@gmail.com" }]
+keywords = ["gdal", "vrt", "multidimensional", "xarray", "stac", "netcdf", "cog", "virtual"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: GIS",
+]
 dependencies = [
   "numpy>=1.24",
   "xarray>=2023.12",
 ]
 
 [project.optional-dependencies]
-# CRS auto-detection from CF metadata.
+# from_stac(): reading stac-geoparquet, and EPSG codes -> WKT.
+stac = ["pyarrow", "pyproj"]
+# Tests. The GDAL round-trip tests also need osgeo.gdal (conda-forge);
+# they are skipped without it.
+test = ["lxml", "netCDF4", "h5netcdf", "dask", "pytest", "pyarrow", "pyproj"]
+# Extra CRS sources.
 cf = ["cf_xarray"]
-# XSD validation in tests.
-test = ["lxml", "netCDF4", "h5netcdf", "dask", "pytest"]
-# GDAL round-trip tests (tests/test_gdal_roundtrip.py) also need osgeo.gdal,
-# best installed from conda-forge; they are skipped without it.
-# rioxarray as an additional CRS source.
 rio = ["rioxarray"]
 
 [project.urls]
-Homepage = "https://github.com/rgdal-dev/xvrt"
-Plan = "https://github.com/rgdal-dev/xvrt/blob/main/mdim-vrt-writer-plan.md"
+Documentation = "https://rgdal-dev.github.io/xvrt/"
+Source = "https://github.com/rgdal-dev/xvrt"
+Issues = "https://github.com/rgdal-dev/xvrt/issues"
+Changelog = "https://github.com/rgdal-dev/xvrt/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "xvrt/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["xvrt"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/xvrt", "/tests", "/schema", "/README.md", "/LICENSE", "/CHANGELOG.md"]
