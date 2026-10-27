@@ -39,10 +39,10 @@ cf = ["cf_xarray"]
 rio = ["rioxarray"]
 
 [project.urls]
-Documentation = "https://rgdal-dev.github.io/xvrt/"
-Source = "https://github.com/rgdal-dev/xvrt"
-Issues = "https://github.com/rgdal-dev/xvrt/issues"
-Changelog = "https://github.com/rgdal-dev/xvrt/blob/main/CHANGELOG.md"
+Documentation = "https://hypertidy.github.io/xvrt/"
+Source = "https://github.com/hypertidy/xvrt"
+Issues = "https://github.com/hypertidy/xvrt/issues"
+Changelog = "https://github.com/hypertidy/xvrt/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "xvrt/__init__.py"

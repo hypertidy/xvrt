@@ -4,7 +4,7 @@ A pure-Python writer. ``write_mdim_vrt`` takes an ``xarray.Dataset`` plus the
 source files and emits a GDAL multidim VRT; ``from_stac`` builds one from
 STAC catalogue fields alone. Output validates against GDAL's ``gdalvrt.xsd``.
 
-Documentation: https://rgdal-dev.github.io/xvrt/
+Documentation: https://hypertidy.github.io/xvrt/
 """
 from __future__ import annotations
 

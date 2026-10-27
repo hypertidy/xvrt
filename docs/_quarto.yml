@@ -5,8 +5,8 @@ project:
 website:
   title: "xvrt"
   description: "Write GDAL multidimensional VRT from xarray Datasets and STAC catalogues."
-  site-url: https://rgdal-dev.github.io/xvrt/
-  repo-url: https://github.com/rgdal-dev/xvrt
+  site-url: https://hypertidy.github.io/xvrt/
+  repo-url: https://github.com/hypertidy/xvrt
   repo-subdir: docs
   repo-branch: main
   repo-actions: [source, issue]
@@ -32,7 +32,7 @@ website:
         text: Reference
     right:
       - icon: github
-        href: https://github.com/rgdal-dev/xvrt
+        href: https://github.com/hypertidy/xvrt
   sidebar:
     - title: Guide
       contents:
