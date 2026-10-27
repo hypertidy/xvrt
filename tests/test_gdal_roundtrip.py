@@ -392,3 +392,85 @@ def test_accessor_forwards_variables(tmp_path):
                                 variables=["err"])
     names = _open_vrt(out).GetMDArrayNames()
     assert "err" in names and "sst" not in names
+
+
+# -- classic raster (band) sources -------------------------------------------
+
+def _cogs(tmp: Path, n=3, ny=5, nx=7):
+    """Small GeoTIFFs shaped like MUR COGs: EPSG:4326, packed Int16 with
+    scale/offset and nodata, one day per file, date in the name."""
+    paths, stack = [], []
+    for i in range(n):
+        p = tmp / f"2026092{i}090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1_analysed_sst.tif"
+        d = gdal.GetDriverByName("GTiff").Create(str(p), nx, ny, 1, gdal.GDT_Int16)
+        d.SetGeoTransform([140.0, 0.01, 0, -40.0, 0, -0.01])
+        d.SetProjection(WKT1_NOAXIS)
+        b = d.GetRasterBand(1)
+        b.SetNoDataValue(-32768)
+        b.SetScale(0.001)
+        b.SetOffset(25.0)
+        v = (np.arange(ny * nx).reshape(ny, nx) - 11000 + 100 * i).astype("int16")
+        v[0, 0] = -32768
+        b.WriteArray(v)
+        d = None
+        paths.append(p)
+        stack.append(v)
+    return paths, np.stack(stack)
+
+
+def _ds_for_cogs(paths, raw):
+    n, ny, nx = raw.shape
+    y = -40.0 - 0.005 - 0.01 * np.arange(ny)
+    x = 140.0 + 0.005 + 0.01 * np.arange(nx)
+    t = np.array([20722.0 + i for i in range(n)])
+    da = xr.DataArray(raw, dims=("time", "y", "x"), name="analysed_sst")
+    da.encoding.update({"dtype": np.dtype("int16"), "_FillValue": -32768.0,
+                        "scale_factor": 0.001, "add_offset": 25.0,
+                        "preferred_chunks": {"time": 1, "y": 5, "x": 7}})
+    return da.to_dataset().assign_coords(
+        time=("time", t, {"units": "days since 1970-01-01"}), y=y, x=x)
+
+
+def test_band_sources_stack(tmp_path):
+    paths, raw = _cogs(tmp_path)
+    ds = _ds_for_cogs(paths, raw)
+    out = _write(ds, paths, tmp_path / "o.vrt", composition="stack")
+    text = out.read_text()
+    assert text.count("<SourceBand>1</SourceBand>") == 3
+    assert "<SourceTranspose>-1,0,1</SourceTranspose>" in text
+    assert 'count="1,5,7"' in text  # SourceSlab extent per source
+    assert "<BlockSize>1,5,7</BlockSize>" in text  # from preferred_chunks
+    a = _open_vrt(out).OpenMDArray("analysed_sst")
+    np.testing.assert_array_equal(a.ReadAsArray(), raw)
+    assert a.GetScale() == pytest.approx(0.001) and a.GetOffset() == pytest.approx(25.0)
+
+
+def test_band_source_refused_in_concat(tmp_path):
+    from xvrt import VrtWriterError
+    paths, raw = _cogs(tmp_path)
+    ds = _ds_for_cogs(paths, raw)
+    with pytest.raises(VrtWriterError, match="stack"):
+        write_mdim_vrt(ds, [str(p) for p in paths], tmp_path / "o.vrt",
+                       composition="concat", concat_dim="time", sizes=[1, 1, 1])
+
+
+def test_regular_increment_from_endpoints():
+    from xvrt._coords import detect_regular
+    y = 89.99 - 0.01 * np.arange(17999)
+    start, inc = detect_regular(y)
+    assert X_repr(inc) == "-0.01"
+
+
+def X_repr(v):
+    from xvrt._xml import repr_double
+    return repr_double(v)
+
+
+def test_dim_types_from_names_without_attrs(tmp_path):
+    paths, raw = _cogs(tmp_path)
+    ds = _ds_for_cogs(paths, raw)
+    ds = ds.assign_coords(time=("time", ds.time.values))  # strip attrs
+    out = _write(ds, paths, tmp_path / "o.vrt", composition="stack")
+    text = out.read_text()
+    assert 'name="time" size="3" indexingVariable="time" type="TEMPORAL"' in text
+    assert 'type="HORIZONTAL_X" direction="EAST"' in text

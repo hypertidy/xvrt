@@ -152,6 +152,22 @@ def _coerce_one(
             f"source #{index}: expected str, Path, or dict — got {type(raw).__name__}"
         )
 
+    # Classic raster sources (GeoTIFF/COG): <SourceBand> instead of
+    # <SourceArray>. Explicit with "band": N in dict form; implied band 1 for
+    # .tif/.tiff paths that name no array.
+    band = extra.get("band") if isinstance(extra, Mapping) else None
+    if band is None and not (isinstance(raw, Mapping) and
+                             ("array" in raw or "arrays" in raw)):
+        if path_str.lower().split("?")[0].endswith((".tif", ".tiff")):
+            band = 1
+    if band is not None:
+        extra = {**extra, "band": int(band)}
+        if composition == "concat":
+            raise VrtWriterError(
+                f"source #{index}: a raster band source is 2D and has no "
+                "concat dim to contribute; use composition='stack'."
+            )
+
     if composition == "stack" and size is not None and size != 1:
         raise VrtWriterError(
             f"source #{index}: stack composition contributes one element per "

@@ -54,7 +54,11 @@ def detect_regular(values: np.ndarray) -> tuple[float, float] | None:
     # Reject zero increment — degenerate.
     if first == 0:
         return None
-    return float(values.flat[0]), float(first)
+    # Increment from the end points, not the first difference: the first
+    # difference of decoded floats carries rounding noise (0.01 comes back as
+    # 0.010000000000005116), and the end-point estimate averages it away.
+    v = values.astype(np.float64)
+    return float(v[0]), float((v[-1] - v[0]) / (v.size - 1))
 
 
 def resolve_mode(
