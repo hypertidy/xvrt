@@ -69,6 +69,7 @@ def normalise_sources(
     default_array: str,
     vrt_path: Path | None = None,
     composition: str,
+    n_vars: int = 1,
 ) -> list[Source]:
     """Resolve user-supplied sources into :class:`Source` records.
 
@@ -85,13 +86,17 @@ def normalise_sources(
     composition
         ``"stack"`` | ``"concat"`` | ``"mosaic"``. Stack sources must not
         carry a per-source ``size``.
+    n_vars
+        Number of data variables being written. With more than one, a
+        dict-form ``"array"`` is ambiguous and refused; use ``"arrays"``
+        (a ``{var: source_array_name}`` mapping) instead.
     """
     if not sources:
         raise VrtWriterError("at least one source is required")
 
     out: list[Source] = []
     for i, raw in enumerate(sources):
-        out.append(_coerce_one(raw, i, default_array, vrt_path, composition))
+        out.append(_coerce_one(raw, i, default_array, vrt_path, composition, n_vars))
     return out
 
 
@@ -101,6 +106,7 @@ def _coerce_one(
     default_array: str,
     vrt_path: Path | None,
     composition: str,
+    n_vars: int = 1,
 ) -> Source:
     if isinstance(raw, Source):
         return raw
@@ -125,6 +131,17 @@ def _coerce_one(
                 f"source #{index}: dict form requires a 'path' key"
             )
         path_str = str(raw["path"])
+        if n_vars > 1 and "array" in raw:
+            raise VrtWriterError(
+                f"source #{index}: 'array' names one source array but "
+                f"{n_vars} variables are being written. Use "
+                "'arrays': {var: '/name', ...} for renames."
+            )
+        arrays = raw.get("arrays")
+        if arrays is not None and not isinstance(arrays, Mapping):
+            raise VrtWriterError(
+                f"source #{index}: 'arrays' must be a dict {{var: name}}"
+            )
         arr = raw.get("array", default_array)
         size = raw.get("size", None)
         rel = bool(raw.get("relative_to_vrt", False))

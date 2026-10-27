@@ -241,3 +241,154 @@ def test_stack_has_dim_override(tmp_path):
         out = write_mdim_vrt(ds, srcs, tmp_path / "o.vrt",
                              composition="stack", concat_dim="time")
     assert "SourceView" not in out.read_text()
+
+
+# -- multi-variable ---------------------------------------------------------
+
+OISST_VARS = ("sst", "anom", "err", "ice")
+
+
+def _oisst_sources(tmp: Path, n_days=3, *, with_mask=False, with_crs=False):
+    """OISST v2.1 file shape: one day per file, (time, zlev, lat, lon),
+    four packed int16 variables, CF time with a 12:00 origin."""
+    rng = np.random.default_rng(0)
+    paths = []
+    for i in range(n_days):
+        data_vars = {}
+        for k, v in enumerate(OISST_VARS):
+            raw = rng.integers(-500, 3000, (1, 1, 3, 4)).astype("int16")
+            raw[0, 0, 0, k] = -999
+            data_vars[v] = (("time", "zlev", "lat", "lon"), raw,
+                            {"units": "degC" if v != "ice" else "%",
+                             "long_name": f"{v} long name",
+                             "scale_factor": 0.01, "add_offset": 0.0,
+                             "_FillValue": np.int16(-999)})
+        if with_mask:
+            data_vars["mask"] = (("lat", "lon"),
+                                 np.array([[1, 0, 1, 1]] * 3, dtype="int8"))
+        if with_crs:
+            data_vars["crs"] = ((), np.int32(0),
+                                {"grid_mapping_name": "latitude_longitude",
+                                 "crs_wkt": WKT_LATLON})
+            for v in OISST_VARS:
+                data_vars[v][2]["grid_mapping"] = "crs"
+        coords = _coords(float(i), "days since 1978-01-01 12:00:00")
+        coords["zlev"] = ("zlev", np.array([0.0], "f4"),
+                          {"axis": "Z", "units": "meters"})
+        ds = xr.Dataset(data_vars, coords=coords, attrs={"title": "OISST-like"})
+        p = tmp / f"oisst-avhrr-v02r01.1978010{i}.nc"
+        ds.to_netcdf(p, encoding={v: {"dtype": "int16"} for v in OISST_VARS})
+        paths.append(p)
+    return paths
+
+
+def test_multivar_oisst_concat(tmp_path):
+    paths = _oisst_sources(tmp_path, 3)
+    ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+    out = _write(ds, paths, tmp_path / "o.vrt")
+    g = _open_vrt(out)
+    assert sorted(g.GetMDArrayNames()) == sorted(
+        ["time", "zlev", "lat", "lon", *OISST_VARS])
+    for v in OISST_VARS:
+        a = g.OpenMDArray(v)
+        assert [d.GetName() for d in a.GetDimensions()] == ["time", "zlev", "lat", "lon"]
+        assert a.GetScale() == pytest.approx(0.01)
+        got = a.GetUnscaled().ReadAsArray()
+        want = ds[v].values
+        np.testing.assert_array_equal(np.isnan(got), np.isnan(want), err_msg=v)
+        np.testing.assert_allclose(got[~np.isnan(got)], want[~np.isnan(want)],
+                                   err_msg=v)
+        assert a.GetAttribute("long_name").Read() == f"{v} long name"
+    np.testing.assert_allclose(g.OpenMDArray("time").ReadAsArray(), [0, 1, 2])
+
+
+def test_multivar_static_var_and_grid_mapping(tmp_path):
+    paths = _oisst_sources(tmp_path, 2, with_mask=True, with_crs=True)
+    ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time",
+                           data_vars="minimal", coords="minimal", compat="override")
+    assert "time" not in ds["mask"].dims
+    out = _write(ds, paths, tmp_path / "o.vrt")
+    g = _open_vrt(out)
+    names = g.GetMDArrayNames()
+    assert "crs" not in names  # grid_mapping container -> <SRS>, not an array
+    np.testing.assert_array_equal(g.OpenMDArray("mask").ReadAsArray(),
+                                  ds["mask"].values)
+    for v in OISST_VARS:
+        srs = g.OpenMDArray(v).GetSpatialRef()
+        assert srs is not None and srs.GetDataAxisToSRSAxisMapping() == [3, 4]
+    assert g.OpenMDArray("mask").GetSpatialRef().GetDataAxisToSRSAxisMapping() == [1, 2]
+
+
+def test_multivar_variables_subset_and_order(tmp_path):
+    paths = _oisst_sources(tmp_path, 2)
+    ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+    out = _write(ds, paths, tmp_path / "o.vrt", variables=["ice", "sst"])
+    g = _open_vrt(out)
+    assert [n for n in g.GetMDArrayNames() if n in OISST_VARS] == ["ice", "sst"]
+
+
+def test_multivar_arrays_rename(tmp_path):
+    """Source files call it 'sst' but the Dataset was renamed to 'temp'."""
+    paths = _oisst_sources(tmp_path, 2)
+    ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+    ds = ds[["sst", "ice"]].rename({"sst": "temp"})
+    srcs = [{"path": str(p), "arrays": {"temp": "/sst"}} for p in paths]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        out = write_mdim_vrt(ds, srcs, tmp_path / "o.vrt",
+                             composition="concat", concat_dim="time")
+    a = _open_vrt(out).OpenMDArray("temp")
+    np.testing.assert_allclose(np.nan_to_num(a.GetUnscaled().ReadAsArray()),
+                               np.nan_to_num(ds["temp"].values))
+
+
+def test_multivar_single_array_key_refused(tmp_path):
+    from xvrt import VrtWriterError
+    paths = _oisst_sources(tmp_path, 2)
+    ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+    with pytest.raises(VrtWriterError, match="arrays"):
+        write_mdim_vrt(ds, [{"path": str(p), "array": "/sst"} for p in paths],
+                       tmp_path / "o.vrt", composition="concat", concat_dim="time")
+
+
+def test_multivar_block_size_rank_mismatch(tmp_path):
+    from xvrt import VrtWriterError
+    paths = _oisst_sources(tmp_path, 2, with_mask=True)
+    ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time",
+                           data_vars="minimal", coords="minimal", compat="override")
+    with pytest.raises(VrtWriterError, match="rank"):
+        _write(ds, paths, tmp_path / "o.vrt", block_size=[1, 1, 3, 4])
+    out = _write(ds, paths, tmp_path / "o.vrt",
+                 block_size={v: [1, 1, 3, 4] for v in OISST_VARS})
+    assert "<BlockSize>1,1,3,4</BlockSize>" in out.read_text()
+
+
+def test_multivar_stack_2d(tmp_path):
+    paths = []
+    for i in range(3):
+        ds = xr.Dataset({"u": (("lat", "lon"), np.full((3, 4), i, "f4")),
+                         "v": (("lat", "lon"), np.full((3, 4), -i, "f4"))},
+                        coords={k: c for k, c in _coords(0, "d").items()
+                                if k != "time"})
+        p = tmp_path / f"s{i}.nc"
+        ds.to_netcdf(p)
+        paths.append(p)
+    ds = xr.concat([xr.open_dataset(p) for p in paths], dim="time")
+    ds = ds.assign_coords(time=[1.0, 2.0, 3.0])
+    out = _write(ds, paths, tmp_path / "o.vrt", composition="stack")
+    g = _open_vrt(out)
+    for v in ("u", "v"):
+        np.testing.assert_array_equal(g.OpenMDArray(v).ReadAsArray(), ds[v].values)
+
+
+def test_accessor_forwards_variables(tmp_path):
+    import xvrt.accessor  # noqa: F401
+    paths = _oisst_sources(tmp_path, 2)
+    ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        out = ds.vrt.write_mdim(tmp_path / "o.vrt", sources=[str(p) for p in paths],
+                                composition="concat", concat_dim="time",
+                                variables=["err"])
+    names = _open_vrt(out).GetMDArrayNames()
+    assert "err" in names and "sst" not in names

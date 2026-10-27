@@ -125,6 +125,33 @@ takes the storage dtype, `scale_factor`, `add_offset` and `_FillValue` from
 `.encoding` and writes them as `<DataType>`, `<Scale>`, `<Offset>` and
 `<NoDataValue>`, so the VRT unscales to the same values xarray shows.
 
+## Multiple variables
+
+Every data variable in `ds` becomes an `<Array>` in the same VRT, sharing
+the dimensions and coordinate arrays. For OISST-style daily files holding
+sst/anom/err/ice:
+
+```python
+paths = sorted(glob.glob("oisst-avhrr-v02r01.*.nc"))
+ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+write_mdim_vrt(ds, [str(p) for p in paths], "oisst.vrt",
+               composition="concat", concat_dim="time")
+```
+
+- Each source file is expected to hold every variable. Variables without
+  the composition dim (a static land mask, say) are read from the first
+  source.
+- `variables=["sst", "ice"]` writes a subset, in that order. By default all
+  data vars are written except CF `grid_mapping` containers, whose content
+  goes into `<SRS>`.
+- `<SRS>` goes on variables with detectable X and Y dims, with the axis
+  mapping computed per variable.
+- If the Dataset's names differ from the files', give dict-form sources an
+  `"arrays": {"temp": "/sst"}` mapping. A single `"array"` is refused when
+  several variables are written, because it would be ambiguous.
+- `block_size=` takes a dict keyed by variable; a plain list applies only
+  when every variable has that rank (otherwise it is an error).
+
 ## v0 scope (shipped)
 
 - Compositions: **stack** (new dim, 1 element per source) and **concat**
@@ -134,6 +161,7 @@ takes the storage dtype, `scale_factor`, `add_offset` and `_FillValue` from
   `coord_mode={"lat": "source", ...}`.
 - CRS: explicit WKT, or detected from `da.attrs["crs_wkt"]` /
   `da.rio.crs` / CF `grid_mapping` attr.
+- Multiple data variables per VRT (see above).
 - Rule enforcement: R3 / R4 / R5 / R6 / R7 with clear error messages.
 - Optional accessor: `import xvrt.accessor` then `ds.vrt.write_mdim(...)`.
 
