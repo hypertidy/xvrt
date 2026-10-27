@@ -152,6 +152,38 @@ write_mdim_vrt(ds, [str(p) for p in paths], "oisst.vrt",
 - `block_size=` takes a dict keyed by variable; a plain list applies only
   when every variable has that rank (otherwise it is an error).
 
+## From a STAC catalogue (no files opened)
+
+`from_stac()` builds the VRT from catalogue fields alone: grid from
+`proj:shape` / `proj:transform`, CRS from `proj:epsg` / `proj:code` /
+`proj:wkt2`, one stack position per item datetime, and one array per asset
+with storage from `raster:bands` (dtype, nodata, scale, offset, unit). Items
+lacking an asset leave nodata at their position.
+
+```python
+from xvrt import from_stac
+from_stac("https://data.source.coop/ausantarctic/ghrsst-mur-v2/ghrsst-mur-v2.parquet",
+          "mur.vrt", block_size=[1, 512, 512])
+```
+
+For the GHRSST MUR collection this writes 5 arrays x 8913 days in a few
+seconds. Items on different grids, duplicate datetimes, or a band whose
+storage changes between items are refused; a unit missing from some items
+is filled from the others. Reading stac-geoparquet needs `pyarrow`; an EPSG
+code needs `pyproj` (or GDAL) to become WKT so the axis mapping can be
+computed.
+
+## Raster band sources and per-variable source lists
+
+- GeoTIFF/COG sources become `<SourceBand>` + `<SourceTranspose>`
+  (`"band": N` in dict form; `.tif`/`.tiff` paths default to band 1).
+- `sources={"sst": [...], "ice": [...]}` gives each variable its own list,
+  for collections that keep each variable in separate files.
+- A dict source's `"index"` places it at that position along the stack dim;
+  positions without a source read as nodata.
+- Every source states its extent in `<SourceSlab>`, so a read opens only the
+  files it touches.
+
 ## v0 scope (shipped)
 
 - Compositions: **stack** (new dim, 1 element per source) and **concat**

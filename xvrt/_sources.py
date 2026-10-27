@@ -60,6 +60,8 @@ def _to_vsi(s: str) -> str:
         return s
     if _is_url(s):
         return f"/vsicurl/{s}"
+    if s.startswith("s3://"):
+        return f"/vsis3/{s[5:]}"
     return s
 
 
@@ -177,7 +179,8 @@ def _coerce_one(
 
     # Apply /vsicurl/ prefixing and relativity.
     path_emitted = _to_vsi(path_str)
-    if vrt_path is not None and not _is_url(path_str) and not path_str.startswith("/vsi"):
+    if (vrt_path is not None and not _is_url(path_str)
+            and not path_str.startswith(("/vsi", "s3://"))):
         try:
             rel_path = Path(path_str).resolve().relative_to(vrt_path.parent.resolve())
             # Only auto-relativise if the caller didn't explicitly set it.
