@@ -13,3 +13,9 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+# Quarto
+docs/_site/
+docs/.quarto/
+docs/**/*_files/
+docs/**/*.quarto_ipynb
+docs/**/*.vrt

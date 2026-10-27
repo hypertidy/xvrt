@@ -37,10 +37,9 @@ description can be versioned, shared and inspected like any other text file.
 
 ## Install
 
-xvrt is not on PyPI yet. Install from GitHub:
-
 ```bash
-pip install "xvrt @ git+https://github.com/rgdal-dev/xvrt"
+pip install xvrt
+pip install "xvrt[stac]"   # adds pyarrow and pyproj for from_stac()
 ```
 
 Requirements are `numpy` and `xarray`. Reading stac-geoparquet needs

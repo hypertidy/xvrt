@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pip:
+    # Pure-Python tests; the GDAL round-trip tests skip without osgeo.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[test]"
+      - run: pytest tests/ -q
+
+  gdal:
+    # Full suite, including reading every VRT back through GDAL.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: xvrt
+          create-args: >-
+            python=3.12 gdal libgdal-netcdf xarray netcdf4 h5netcdf dask
+            lxml pyarrow pyproj pytest cftime
+      - run: pip install -e . --no-deps
+      - run: pytest tests/ -q
