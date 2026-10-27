@@ -140,6 +140,7 @@ def write_mdim_vrt(
     # Composition-specific dim / size arithmetic.
     if composition == "stack":
         _check_stack(ds, data_var, sources_norm, concat_dim)
+        sources_norm = _resolve_stack_has_dim(sources_norm, concat_dim)
     elif composition == "concat":
         _check_concat(ds, data_var, sources_norm, concat_dim)
 
@@ -306,6 +307,52 @@ def _check_stack(
         )
 
 
+def _resolve_stack_has_dim(sources: list[Source], new_dim: str) -> list[Source]:
+    """Record, per stack source, whether it already carries ``new_dim``.
+
+    "Stack" covers two source shapes: 2D slices that lack the stack dim
+    (they need a ``[newaxis,...]`` view), and files that already carry it
+    with length 1 (one-time-step-per-file NetCDF; adding an axis would make
+    the source rank too high). Dict-form sources may say so with
+    ``has_dim=True|False``; otherwise the first source is opened (metadata
+    only) and its answer applies to all sources without an explicit value.
+    """
+    from dataclasses import replace
+
+    if all("has_dim" in s.extra for s in sources):
+        return sources
+    probe = next(s for s in sources if "has_dim" not in s.extra)
+    has = _source_has_dim(probe.original or probe.path, probe.array, new_dim)
+    return [s if "has_dim" in s.extra
+            else replace(s, extra={**s.extra, "has_dim": has})
+            for s in sources]
+
+
+def _source_has_dim(target: str, array: str, dim: str) -> bool:
+    """Does ``array`` in ``target`` have dimension ``dim``? Metadata only.
+
+    Unopenable sources (e.g. GeoTIFFs xarray cannot read without rioxarray)
+    are treated as lacking the dim, which is right for classic 2D rasters.
+    """
+    import xarray as _xr
+
+    is_url = target.startswith(("http://", "https://"))
+    engines: list[str | None] = ["h5netcdf", None] if is_url else [None, "h5netcdf"]
+    name = array.lstrip("/")
+    for engine in engines:
+        try:
+            kw: dict[str, Any] = {"decode_times": False, "decode_cf": False}
+            if engine is not None:
+                kw["engine"] = engine
+            with _xr.open_dataset(target, **kw) as sds:
+                if name in sds.variables:
+                    return dim in sds[name].dims
+                return dim in sds.dims
+        except Exception:
+            continue
+    return False
+
+
 def _resolve_concat_sizes(
     *,
     ds: xr.Dataset,
@@ -335,7 +382,7 @@ def _resolve_concat_sizes(
                 "(one per source)."
             )
         return [
-            Source(s.path, s.array, s.relative_to_vrt, int(sz), s.extra)
+            Source(s.path, s.array, s.relative_to_vrt, int(sz), s.extra, s.original)
             for s, sz in zip(sources, explicit)
         ]
 
@@ -520,6 +567,7 @@ def _build_vrt(
         _emit_coord_array(
             grp, ds.coords[d], dim=d,
             mode=coord_mode, threshold=inline_threshold, sources=sources,
+            composition=composition, concat_dim=concat_dim,
         )
 
     # Data-var <Array>.
@@ -624,40 +672,40 @@ def _reencode_datetime_coord(da: xr.DataArray) -> xr.DataArray:
     ``"days since 1970-01-01"`` — a benign choice since the numeric values
     still represent the same moments in time.
     """
-    import re as _re
+    from xarray.coding.times import encode_cf_datetime
 
     units = da.encoding.get("units") or da.attrs.get("units")
     if not isinstance(units, str) or "since" not in units:
         units = "days since 1970-01-01"
+    calendar = da.encoding.get("calendar") or da.attrs.get("calendar")
 
-    # Parse "<unit> since <origin>".
-    m = _re.match(r"^\s*(\w+)\s+since\s+(.+?)\s*$", units)
-    if not m:
-        units = "days since 1970-01-01"
-        m = _re.match(r"^\s*(\w+)\s+since\s+(.+?)\s*$", units)
+    # xarray's own CF encoder: honours a time-of-day in the origin
+    # ("seconds since 1981-01-01 12:00:00") and non-standard calendars
+    # (cftime objects), both of which a hand-rolled numpy subtraction gets
+    # wrong.
+    try:
+        numeric, _units_out, cal_out = encode_cf_datetime(
+            da.values, units=units, calendar=calendar
+        )
+    except Exception:
+        numeric, units, cal_out = encode_cf_datetime(da.values)
 
-    unit_word, origin_str = m.group(1).lower(), m.group(2)
-    unit_map = {
-        "second": "s", "seconds": "s", "sec": "s", "secs": "s", "s": "s",
-        "minute": "m", "minutes": "m", "min": "m", "mins": "m",
-        "hour": "h", "hours": "h", "hr": "h", "hrs": "h",
-        "day": "D", "days": "D", "d": "D",
-    }
-    if unit_word not in unit_map:
-        # Unknown unit — fall back to days.
-        unit_word = "days"
-        origin_str = "1970-01-01"
-        units = f"days since {origin_str}"
+    attrs = {k: v for k, v in da.attrs.items() if k != "calendar"}
+    attrs["units"] = units
+    if calendar or cal_out not in ("standard", "proleptic_gregorian", "gregorian"):
+        attrs["calendar"] = calendar or cal_out
+    return xr.DataArray(np.asarray(numeric).astype(np.float64), dims=da.dims,
+                        attrs=attrs, name=da.name)
 
-    origin = np.datetime64(origin_str.split(" ")[0])  # drop any hh:mm:ss
-    div = np.timedelta64(1, unit_map[unit_word])
-    numeric = (da.values - origin) / div
 
-    # Preserve existing attrs but overwrite units to match the encoding we
-    # actually chose (in case we fell back to "days since 1970-01-01").
-    attrs = {**da.attrs, "units": units}
-    return xr.DataArray(numeric.astype(np.float64), dims=da.dims,
-                         coords=da.coords, attrs=attrs, name=da.name)
+def _is_datetime_like(da: xr.DataArray) -> bool:
+    """datetime64, or an object array of cftime datetimes."""
+    if da.dtype.kind == "M":
+        return True
+    if da.dtype.kind == "O" and da.size:
+        first = np.asarray(da.values).ravel()[0]
+        return hasattr(first, "calendar") and hasattr(first, "timetuple")
+    return False
 
 
 def _emit_coord_array(
@@ -668,12 +716,14 @@ def _emit_coord_array(
     mode: CoordMode | Mapping[str, CoordMode],
     threshold: int,
     sources: list[Source],
+    composition: Composition = "concat",
+    concat_dim: str | None = None,
 ) -> None:
-    # Auto-encode datetime64 coords to numeric + CF units. xarray stashes
+    # Auto-encode datetime coords to numeric + CF units. xarray stashes
     # the original "units" string in encoding when it decodes times on open;
     # we round-trip back through it where possible so the VRT reads back to
     # the same timestamps. Fallback origin is the unix epoch.
-    if da.dtype.kind == "M":
+    if _is_datetime_like(da):
         da = _reencode_datetime_coord(da)
 
     arr = X.sub(parent, "Array", name=dim)
@@ -697,7 +747,36 @@ def _emit_coord_array(
         _emit_attrs(arr, _filter_axis_attrs(da.attrs))
         return
 
-    chosen = resolve_mode(dim, values, mode, threshold=threshold)
+    is_comp_dim = concat_dim is not None and dim == concat_dim
+    explicit = mode.get(dim) if isinstance(mode, Mapping) else mode
+    if is_comp_dim and explicit in (None, "auto"):
+        # The composition dim's values are spread across every source (or,
+        # for stack, exist in none of them). Auto mode never points at a
+        # single source file for it.
+        chosen = "inline"
+    else:
+        chosen = resolve_mode(dim, values, mode, threshold=threshold)
+
+    if chosen == "source" and is_comp_dim:
+        if composition == "stack":
+            raise VrtWriterError(
+                f"coord_mode 'source' for the stack dim {dim!r}: stacked "
+                "sources do not carry this coord. Use 'inline' (or 'auto')."
+            )
+        # concat: one <Source> per file, slabbed along the coord's only dim.
+        # Each file's own coord values are read as stored, so this is only
+        # correct when every file encodes the coord with the same units.
+        offset = 0
+        for src in sources:
+            s = X.sub(arr, "Source")
+            X.sub(s, "SourceFilename", text=src.path,
+                  relativeToVRT=src.relative_to_vrt)
+            X.sub(s, "SourceArray", text=_full_array_name(dim))
+            X.sub(s, "DestSlab", offset=str(offset))
+            offset += int(src.size)  # type: ignore[arg-type]
+        _emit_attrs(arr, _filter_axis_attrs(da.attrs))
+        return
+
     if chosen == "inline":
         ivv = X.sub(arr, "InlineValuesWithValueElement")
         if values.dtype.kind == "f":
@@ -722,10 +801,59 @@ def _emit_coord_array(
 
 
 def _filter_axis_attrs(attrs: Mapping[str, Any]) -> dict[str, Any]:
-    """Strip attrs that are already represented as XML attributes / elements."""
+    """Strip attrs that are already represented as XML attributes / elements.
+
+    ``scale_factor`` / ``add_offset`` are materialised as ``<Scale>`` /
+    ``<Offset>``; repeating them as ``<Attribute>`` invites readers that
+    apply CF decoding from attributes to unpack twice.
+    """
     return {k: v for k, v in attrs.items()
             if k not in {"units", "axis", "standard_name",
-                         "_FillValue", "missing_value"}}
+                         "_FillValue", "missing_value",
+                         "scale_factor", "add_offset"}}
+
+
+def _storage_packing(da: xr.DataArray) -> dict[str, Any]:
+    """On-disk dtype, scale, offset and fill for a data variable.
+
+    The VRT reads the *source* bytes: GDAL's mdim VRT does not apply xarray's
+    CF decoding. When xarray has decoded a variable (the default
+    ``mask_and_scale=True``), the in-memory dtype is float and the packing
+    keys have moved from ``attrs`` into ``encoding``. Declaring the decoded
+    dtype with no ``<Scale>`` would hand back raw packed integers as if they
+    were physical values, so we recover the storage description from
+    ``encoding`` and let GDAL's Scale/Offset/NoData carry the decoding.
+
+    ``attrs`` win over ``encoding`` (``mask_and_scale=False`` keeps them in
+    attrs and the dtype is already the storage dtype).
+    """
+    attrs, enc = da.attrs, da.encoding
+
+    def pick(*keys):
+        for k in keys:
+            if attrs.get(k) is not None:
+                return attrs[k]
+        for k in keys:
+            if enc.get(k) is not None:
+                return enc[k]
+        return None
+
+    dtype = da.dtype
+    enc_dtype = enc.get("dtype")
+    if enc_dtype is not None:
+        try:
+            ed = np.dtype(enc_dtype)
+        except TypeError:
+            ed = None
+        if ed is not None and ed.kind in "biuf" and da.dtype.kind in "biuf":
+            dtype = ed
+
+    return {
+        "dtype": dtype,
+        "fill": pick("_FillValue", "missing_value"),
+        "scale": pick("scale_factor"),
+        "offset": pick("add_offset"),
+    }
 
 
 def _full_array_name(name: str) -> str:
@@ -744,8 +872,10 @@ def _emit_data_array(
     crs_wkt: str | None,
     block_size: list[int] | None,
 ) -> None:
+    packing = _storage_packing(da)
+
     arr = X.sub(parent, "Array", name=name)
-    X.sub(arr, "DataType", text=numpy_to_vrt_dtype(da.dtype))
+    X.sub(arr, "DataType", text=numpy_to_vrt_dtype(packing["dtype"]))
     for d in da.dims:
         X.sub(arr, "DimensionRef", ref=d)
 
@@ -753,30 +883,29 @@ def _emit_data_array(
         X.sub(arr, "BlockSize", text=X.comma_list(block_size))
 
     if crs_wkt:
-        # Spatial axis mapping: GDAL convention is "2,1" when
-        # (y, x) dim order puts y before x. Detect and emit.
-        mapping = _axis_mapping(da)
+        # Spatial axis mapping: which array dim carries each SRS axis.
+        mapping = _axis_mapping(da, crs_wkt)
         X.sub(arr, "SRS", text=crs_wkt, dataAxisToSRSAxisMapping=mapping)
 
     # <Unit> / <NoDataValue> / <Offset> / <Scale> from attrs.
     units = da.attrs.get("units")
     if isinstance(units, str) and units.strip():
         X.sub(arr, "Unit", text=units)
-    fill = da.attrs.get("_FillValue", da.attrs.get("missing_value"))
+    fill = packing["fill"]
     if fill is not None:
         try:
-            fv = float(fill)
+            fv = float(np.asarray(fill).ravel()[0])
             if np.isfinite(fv):
                 X.sub(arr, "NoDataValue", text=X.repr_double(fv))
             else:
                 # nan/inf — XSD allows the literal "nan"/"NAN".
                 X.sub(arr, "NoDataValue", text="nan" if np.isnan(fv) else str(fv))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, IndexError):
             pass  # non-numeric fill — skip rather than emit garbage
-    off = da.attrs.get("add_offset")
+    off = packing["offset"]
     if off is not None:
         X.sub(arr, "Offset", text=X.repr_double(float(off)))
-    scl = da.attrs.get("scale_factor")
+    scl = packing["scale"]
     if scl is not None:
         X.sub(arr, "Scale", text=X.repr_double(float(scl)))
 
@@ -790,53 +919,75 @@ def _emit_data_array(
     _emit_attrs(arr, _filter_axis_attrs(da.attrs))
 
 
-def _axis_mapping(da: xr.DataArray) -> str | None:
+def _axis_mapping(da: xr.DataArray, crs_wkt: str | None = None) -> str | None:
     """Return the dataAxisToSRSAxisMapping string, or None if unclear.
 
-    The mapping is 1-based: element i (0-based array position) maps to the
-    given 1-based SRS axis. For typical (..., y, x) order with a geographic
-    SRS (lat, lon), the mapping is "...,2,1"; for projected (easting,
-    northing), it's "...,1,2".
+    GDAL semantics: entry *i* is the 1-based index of the **array dimension**
+    that carries SRS axis *i*. Its length is the number of SRS axes, and it
+    indexes over all array dims (time and depth included). So a geographic
+    CRS with WKT axis order (lat, lon) on an array ``(time, lat, lon)`` gives
+    ``"2,3"``; with (lon, lat) / traditional GIS order it gives ``"3,2"``.
 
-    We only emit when we can identify y/x (or lat/lon) positions. Otherwise
-    return None and let the reader use the default.
+    SRS axis order is read from the WKT's ``AXIS[...]`` directions; WKT
+    without AXIS defaults to easting-first, as GDAL does for WKT1.
     """
-    dims = list(da.dims)
-    # Look up on the array's coord attrs — a dim is "Y" if its coord has
-    # axis='Y' or similar.
-    axis_tags: list[str | None] = []
-    for d in dims:
-        tag = None
-        coord = da.coords.get(d)
-        if coord is not None:
-            a = coord.attrs.get("axis", "").upper()
-            sn = coord.attrs.get("standard_name", "").lower()
-            if a == "Y" or sn in {"latitude", "projection_y_coordinate"}:
-                tag = "Y"
-            elif a == "X" or sn in {"longitude", "projection_x_coordinate"}:
-                tag = "X"
-            elif a == "T" or "time" in sn:
-                tag = "T"
-            elif a == "Z":
-                tag = "Z"
-        axis_tags.append(tag)
-
-    if "Y" not in axis_tags or "X" not in axis_tags:
+    tags = [_dim_axis_tag(da, d) for d in da.dims]
+    if "Y" not in tags or "X" not in tags:
         return None
+    order = _srs_axis_order(crs_wkt) if crs_wkt else None
+    if order is None:
+        order = ["X", "Y"]
+    return ",".join(str(tags.index(t) + 1) for t in order)
 
-    # Geographic default: y → SRS axis 2 (lat), x → SRS axis 1 (lon).
-    # (The user can override post-hoc; v0 picks the common case.)
-    mapping = []
-    for t in axis_tags:
-        if t == "Y":
-            mapping.append("2")
-        elif t == "X":
-            mapping.append("1")
+
+_Y_NAMES = {"lat", "latitude", "y", "nav_lat", "rlat", "yc"}
+_X_NAMES = {"lon", "longitude", "x", "nav_lon", "rlon", "xc"}
+
+
+def _dim_axis_tag(da: xr.DataArray, d: str) -> str | None:
+    coord = da.coords.get(d)
+    if coord is not None:
+        a = str(coord.attrs.get("axis", "")).upper()
+        sn = str(coord.attrs.get("standard_name", "")).lower()
+        if a == "Y" or sn in {"latitude", "projection_y_coordinate", "grid_latitude"}:
+            return "Y"
+        if a == "X" or sn in {"longitude", "projection_x_coordinate", "grid_longitude"}:
+            return "X"
+        if a in ("T", "Z") or "time" in sn:
+            return a or "T"
+    low = str(d).lower()
+    if low in _Y_NAMES:
+        return "Y"
+    if low in _X_NAMES:
+        return "X"
+    return None
+
+
+def _srs_axis_order(wkt: str) -> list[str] | None:
+    """Horizontal axis order of a 2D CRS from its WKT, e.g. ``["Y", "X"]``.
+
+    Takes the last two ``AXIS[...]`` entries: in WKT1 a PROJCS may repeat its
+    GEOGCS axes first, and in both WKT1 and WKT2 the CRS's own axes come
+    last. Returns None for anything that is not plainly two horizontal axes
+    (compound CRS etc.), letting the caller fall back.
+    """
+    import re as _re
+
+    dirs = _re.findall(r'AXIS\[\s*"[^"]*"\s*,\s*([A-Za-z]+)', wkt)
+    if len(dirs) < 2:
+        return None
+    if "COMPOUNDCRS" in wkt.upper() or "COMPD_CS" in wkt.upper():
+        return None
+    out = []
+    for d in dirs[-2:]:
+        d = d.lower()
+        if d in ("north", "south"):
+            out.append("Y")
+        elif d in ("east", "west"):
+            out.append("X")
         else:
-            # Non-spatial axes don't participate in the SRS mapping.
-            # GDAL accepts a short mapping that covers only spatial dims.
-            continue
-    return ",".join(mapping) if mapping else None
+            return None
+    return out if sorted(out) == ["X", "Y"] else None
 
 
 def _resolve_block_size(
@@ -875,6 +1026,13 @@ def _emit_sources(
         X.sub(src_el, "SourceFilename", text=s.path,
               relativeToVRT=s.relative_to_vrt)
         X.sub(src_el, "SourceArray", text=_full_array_name(s.array))
+        if composition == "stack" and not s.extra.get("has_dim", False):
+            # A stacked source lacks the new dim. GDAL refuses to read a
+            # source whose rank differs from the destination ("Inconsistent
+            # number of dimensions"), so insert a length-1 axis at the
+            # stack position with a view.
+            X.sub(src_el, "SourceView",
+                  text="[" + ":," * comp_axis + "newaxis,...]")
         # DestSlab always emitted (plan rule — zeros included).
         offsets = [0] * len(dims)
         offsets[comp_axis] = offset_so_far

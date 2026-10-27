@@ -111,7 +111,7 @@ def main() -> int:
             diff = np.abs(got - expected)
             print(f"  max abs diff: {diff.max()}  at {np.unravel_index(diff.argmax(), diff.shape)}")
             return 1
-        print(f"OK stack  shape={shape}  dtype={arr.GetDataType().GetName()}")
+        print(f"OK stack  shape={shape}  dtype={gdal.GetDataTypeName(arr.GetDataType().GetNumericDataType())}")
 
         # Coord check.
         time_arr = root.OpenMDArrayFromFullname("/time")

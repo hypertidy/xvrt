@@ -1,8 +1,13 @@
 # Pinned schema
 
-The writer targets `gdalvrt.xsd` from the GDAL `release/3.12` branch:
+`gdalvrt.xsd` here is GDAL's own schema, copied from the GDAL 3.13.3
+conda-forge build (`share/gdal/gdalvrt.xsd`). Upstream source:
 
-    https://raw.githubusercontent.com/OSGeo/gdal/refs/heads/release/3.12/frmts/vrt/data/gdalvrt.xsd
+    https://github.com/OSGeo/gdal/blob/master/frmts/vrt/data/gdalvrt.xsd
 
-Drop the file here as `gdalvrt.xsd`. The test suite validates every emitted
-file against it; the writer itself doesn't read the schema.
+`tests/test_gdal_roundtrip.py` validates every VRT it writes against this
+file; the writer itself never reads it.
+
+Known disagreement: the schema types mdim `<BlockSize>` as a space-separated
+`integerList`, but the VRT driver only parses comma-separated values. xvrt
+follows the driver, and the tests ignore that one schema error.

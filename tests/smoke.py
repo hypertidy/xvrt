@@ -188,13 +188,14 @@ def run_all() -> int:
         )
         print(p.read_text())
 
-        print("\n== negative: missing crs raises R4 ==")
+        print("\n== negative: missing crs raises R4 (require_crs=True) ==")
         paths = [make_source(td, i, float(i)) for i in range(2)]
         pieces = [xr.open_dataset(pp).expand_dims(time=[float(i)]) for i, pp in enumerate(paths)]
         ds = xr.concat(pieces, dim="time").assign_coords(time=("time", [0.0, 1.0]))
         try:
             write_mdim_vrt(ds, [str(pp) for pp in paths], td / "nocrs.vrt",
-                            composition="stack", concat_dim="time")
+                            composition="stack", concat_dim="time",
+                            require_crs=True)
         except VrtWriterError as e:
             print("  R4 raised as expected:", e)
         else:
