@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from ._writer import write_mdim_vrt, encode_datetime_coord
 from ._errors import VrtWriterError
+from ._stac import from_stac
 
-__all__ = ["write_mdim_vrt", "encode_datetime_coord", "VrtWriterError"]
+__all__ = ["write_mdim_vrt", "from_stac", "encode_datetime_coord", "VrtWriterError"]
 __version__ = "0.0.1.9000"

@@ -118,20 +118,39 @@ def write_mdim_vrt(
         )
     lead = comp_vars[0]  # the variable used for size / rank inference
 
-    sources_norm = normalise_sources(
-        sources,
-        default_array=lead,
-        vrt_path=path,
-        composition=composition,
-        n_vars=len(data_vars),
-    )
+    per_var = isinstance(sources, Mapping)
+    if per_var:
+        missing = [v for v in data_vars if v not in sources]
+        if missing:
+            raise VrtWriterError(
+                f"sources is a per-variable mapping but has no entry for "
+                f"{missing}. Keys: {list(sources)}."
+            )
 
-    # Resolve per-source sizes for concat (auto-discover before checking).
-    if composition == "concat":
-        sources_norm = _resolve_concat_sizes(
-            ds=ds, data_var=lead, concat_dim=concat_dim,
-            sources=sources_norm, explicit=sizes,
-        )
+    def prepare(raw: Sequence[Any], var: str, n_vars: int) -> list[Source]:
+        srcs = normalise_sources(raw, default_array=var, vrt_path=path,
+                                 composition=composition, n_vars=n_vars)
+        if concat_dim not in ds[var].dims:
+            return srcs  # static variable: first source supplies it
+        if composition == "concat":
+            srcs = _resolve_concat_sizes(ds=ds, data_var=var, concat_dim=concat_dim,
+                                         sources=srcs, explicit=sizes)
+            _check_concat(ds, var, srcs, concat_dim)
+        elif composition == "stack":
+            _check_stack(ds, var, srcs, concat_dim)
+            srcs = _resolve_stack_has_dim(
+                srcs, concat_dim,
+                srcs[0].array if per_var else _array_for(srcs[0], var, data_vars))
+        return srcs
+
+    if per_var:
+        sources_by_var = {v: prepare(sources[v], v, 1) for v in data_vars}
+        arrays_by_var = {v: [s.array for s in sources_by_var[v]] for v in data_vars}
+    else:
+        shared = prepare(sources, lead, len(data_vars))
+        sources_by_var = {v: shared for v in data_vars}
+        arrays_by_var = {v: [_array_for(s, v, data_vars) for s in shared]
+                         for v in data_vars}
 
     # R7: array-name disjointness.
     _check_array_name_collisions(ds)
@@ -139,22 +158,15 @@ def write_mdim_vrt(
     # R4: CRS, per variable; strict or soft.
     crs_by_var = _resolve_crs_all(ds, data_vars, crs, require=require_crs)
 
-    # Composition-specific dim / size arithmetic.
-    if composition == "stack":
-        _check_stack(ds, lead, sources_norm, concat_dim)
-        sources_norm = _resolve_stack_has_dim(
-            sources_norm, concat_dim, _array_for(sources_norm[0], lead, data_vars)
-        )
-    elif composition == "concat":
-        _check_concat(ds, lead, sources_norm, concat_dim)
-
     block_sizes = _resolve_block_sizes(ds, data_vars, block_size)
 
     # Build XML.
     root = _build_vrt(
         ds=ds,
         data_vars=data_vars,
-        sources=sources_norm,
+        sources_by_var=sources_by_var,
+        arrays_by_var=arrays_by_var,
+        coord_sources=sources_by_var[lead],
         composition=composition,
         concat_dim=concat_dim,
         crs_by_var=crs_by_var,
@@ -309,6 +321,23 @@ def _check_stack(
         )
     n_sources = len(sources)
     n_along = ds.sizes[new_dim]
+    indexed = [s.extra.get("index") for s in sources]
+    if any(i is not None for i in indexed):
+        if any(i is None for i in indexed):
+            raise VrtWriterError(
+                "composition='stack': either every source has an 'index' or "
+                "none does."
+            )
+        idx = [int(i) for i in indexed]
+        bad = [i for i in idx if not 0 <= i < n_along]
+        if bad:
+            raise VrtWriterError(
+                f"composition='stack': source index {bad[:5]} outside "
+                f"0..{n_along - 1} (ds.sizes[{new_dim!r}] = {n_along})."
+            )
+        if len(set(idx)) != len(idx):
+            raise VrtWriterError("composition='stack': duplicate source index.")
+        return
     if n_sources != n_along:
         raise VrtWriterError(
             f"composition='stack': {n_sources} sources provided but "
@@ -544,7 +573,9 @@ def _build_vrt(
     *,
     ds: xr.Dataset,
     data_vars: list[str],
-    sources: list[Source],
+    sources_by_var: Mapping[str, list[Source]],
+    arrays_by_var: Mapping[str, list[str]],
+    coord_sources: list[Source],
     composition: Composition,
     concat_dim: str | None,
     crs_by_var: Mapping[str, str | None],
@@ -580,7 +611,7 @@ def _build_vrt(
             continue
         _emit_coord_array(
             grp, ds.coords[d], dim=d,
-            mode=coord_mode, threshold=inline_threshold, sources=sources,
+            mode=coord_mode, threshold=inline_threshold, sources=coord_sources,
             composition=composition, concat_dim=concat_dim,
         )
 
@@ -590,8 +621,8 @@ def _build_vrt(
             grp,
             da=ds[v],
             name=v,
-            sources=sources,
-            arrays=[_array_for(s, v, data_vars) for s in sources],
+            sources=sources_by_var[v],
+            arrays=arrays_by_var[v],
             composition=composition,
             concat_dim=concat_dim,
             crs_wkt=crs_by_var.get(v),
@@ -1188,7 +1219,11 @@ def _emit_sources(
         count = list(shape)
         count[comp_axis] = size_along
         slab(src_el, count)
-        # DestSlab always emitted (plan rule, zeros included).
+        # DestSlab always emitted (plan rule, zeros included). An explicit
+        # "index" places the source at that position along the composition
+        # dim (gaps read as nodata); otherwise sources are laid end to end.
+        if s.extra.get("index") is not None:
+            offset_so_far = int(s.extra["index"])
         offsets = [0] * len(dims)
         offsets[comp_axis] = offset_so_far
         X.sub(src_el, "DestSlab", offset=X.comma_list(offsets))

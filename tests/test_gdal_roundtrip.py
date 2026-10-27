@@ -474,3 +474,100 @@ def test_dim_types_from_names_without_attrs(tmp_path):
     text = out.read_text()
     assert 'name="time" size="3" indexingVariable="time" type="TEMPORAL"' in text
     assert 'type="HORIZONTAL_X" direction="EAST"' in text
+
+
+# -- per-variable sources and from_stac ---------------------------------------
+
+def _stac_items(tmp_path, n=4, anomaly_from=2, nested=False):
+    """STAC items over local COGs; 'anom' exists only from item anomaly_from."""
+    for sub_dir in ("sst", "anom"):
+        (tmp_path / sub_dir).mkdir(parents=True, exist_ok=True)
+    sst, raw = _cogs(tmp_path / "sst", n=n)
+    anom, araw = _cogs(tmp_path / "anom", n=n)
+    items = []
+    for i in range(n):
+        assets = {"sst": {"href": str(sst[i]), "roles": ["data"],
+                          "raster:bands": [{"data_type": "int16", "nodata": -32768,
+                                            "scale": 0.001, "offset": 25.0,
+                                            "unit": "celsius" if i else None}]}}
+        if i >= anomaly_from:
+            assets["anom"] = {"href": str(anom[i]), "roles": ["data"],
+                              "raster:bands": [{"data_type": "int16", "nodata": -32768,
+                                                "scale": 0.001, "offset": 25.0}]}
+        props = {"datetime": f"2026-09-2{i}T00:00:00Z",
+                 "proj:shape": [5, 7], "proj:wkt2": WKT_LATLON,
+                 "proj:transform": [0.01, 0, 140.0, 0, -0.01, -40.0, 0, 0, 1]}
+        it = {"id": f"item{i}", "assets": assets}
+        if nested:
+            it["properties"] = props
+        else:
+            it.update(props)
+        items.append(it)
+    return list(reversed(items)), raw, araw   # unsorted on purpose
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_from_stac_multi_asset_with_gaps(tmp_path, nested):
+    from xvrt import from_stac
+    items, raw, araw = _stac_items(tmp_path, nested=nested)
+    out = from_stac(items, tmp_path / "o.vrt")
+    _validate_xsd(out)
+    g = _open_vrt(out)
+    assert sorted(n for n in g.GetMDArrayNames() if n not in ("time", "y", "x")) == ["anom", "sst"]
+    np.testing.assert_array_equal(g.OpenMDArray("sst").ReadAsArray(), raw)
+    a = g.OpenMDArray("anom").ReadAsArray()
+    assert (a[:2] == -32768).all()                 # no source: nodata
+    np.testing.assert_array_equal(a[2:], araw[2:])
+    assert g.OpenMDArray("sst").GetUnit() == "celsius"   # missing unit filled
+    np.testing.assert_allclose(g.OpenMDArray("time").ReadAsArray(), 20716 + np.arange(4))  # 2026-09-20..23
+    assert g.OpenMDArray("sst").GetSpatialRef().GetDataAxisToSRSAxisMapping() == [2, 3]
+
+
+def test_from_stac_refuses_mixed_grids(tmp_path):
+    from xvrt import from_stac, VrtWriterError
+    items, _, _ = _stac_items(tmp_path)
+    items[0]["proj:shape"] = [6, 7]
+    with pytest.raises(VrtWriterError, match="grid"):
+        from_stac(items, tmp_path / "o.vrt")
+
+
+def test_from_stac_refuses_storage_change_and_duplicate_times(tmp_path):
+    from xvrt import from_stac, VrtWriterError
+    items, _, _ = _stac_items(tmp_path)
+    items[0]["assets"]["sst"]["raster:bands"][0]["scale"] = 0.01
+    with pytest.raises(VrtWriterError, match="storage"):
+        from_stac(items, tmp_path / "o.vrt")
+    items, _, _ = _stac_items(tmp_path / "b")
+    items[1]["datetime"] = items[0]["datetime"]
+    with pytest.raises(VrtWriterError, match="duplicate"):
+        from_stac(items, tmp_path / "o.vrt")
+
+
+def test_per_variable_sources_with_index(tmp_path):
+    items, raw, araw = _stac_items(tmp_path)
+    ds = _ds_for_cogs(None, raw[:3])
+    ds["anom"] = ds["analysed_sst"].copy()
+    srcs = {
+        "analysed_sst": [str(p) for p in sorted((tmp_path / "sst").glob("*.tif"))][:3],
+        "anom": [{"path": str(p), "index": i}
+                 for i, p in enumerate(sorted((tmp_path / "anom").glob("*.tif"))[:3])
+                 if i >= 1],
+    }
+    out = write_mdim_vrt(ds, srcs, tmp_path / "o.vrt", composition="stack",
+                         concat_dim="time", crs=WKT_LATLON)
+    _validate_xsd(out)
+    g = _open_vrt(out)
+    a = g.OpenMDArray("anom").ReadAsArray()
+    assert (a[0] == -32768).all()
+    np.testing.assert_array_equal(a[1:], araw[1:3])
+
+
+def test_index_all_or_none(tmp_path):
+    from xvrt import VrtWriterError
+    items, raw, _ = _stac_items(tmp_path)
+    ds = _ds_for_cogs(None, raw[:3])
+    p = sorted((tmp_path / "sst").glob("*.tif"))[:3]
+    srcs = [{"path": str(p[0]), "index": 0}, str(p[1]), str(p[2])]
+    with pytest.raises(VrtWriterError, match="every source"):
+        write_mdim_vrt(ds, srcs, tmp_path / "o.vrt", composition="stack",
+                       concat_dim="time", crs=WKT_LATLON)
