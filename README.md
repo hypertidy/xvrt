@@ -99,11 +99,31 @@ pip install -e .[rio]    # adds rioxarray (extra CRS source)
 
 ```
 pytest tests/
-# then, where GDAL 3.12 is available:
+```
+
+`tests/test_gdal_roundtrip.py` reads every written VRT back through
+`osgeo.gdal` (values, dtype, scale/offset/nodata, time, axis mapping) and
+validates it against the pinned `schema/gdalvrt.xsd`. It is skipped when
+GDAL's Python bindings are not importable; conda-forge is the easy route:
+
+```
+micromamba create -n xvrt -c conda-forge python gdal libgdal-netcdf xarray netcdf4 h5netcdf dask lxml pytest
+```
+
+Standalone checks:
+
+```
 python scripts/validate_roundtrip.py
-# and for schema conformance (once schema/gdalvrt.xsd is in place):
 python scripts/validate_xsd.py /path/to/output.vrt
 ```
+
+## Decoded (packed) data
+
+The VRT reads source bytes; GDAL does not apply xarray's CF decoding. When
+xarray has decoded a variable (`mask_and_scale=True`, the default), xvrt
+takes the storage dtype, `scale_factor`, `add_offset` and `_FillValue` from
+`.encoding` and writes them as `<DataType>`, `<Scale>`, `<Offset>` and
+`<NoDataValue>`, so the VRT unscales to the same values xarray shows.
 
 ## v0 scope (shipped)
 

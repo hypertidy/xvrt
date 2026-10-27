@@ -134,9 +134,9 @@ def _attrstr(v) -> str:
 def int_list(values: Iterable[int]) -> str:
     """Space-separated integer list, the XSD ``integerList`` shape.
 
-    Used for ``<BlockSize>`` (space-separated). For ``<DestSlab offset=...>``
-    the attribute in the XSD is a string that GDAL parses as comma-separated;
-    we write that separately.
+    Currently unused: mdim ``<BlockSize>`` is typed ``integerList`` in the
+    XSD, but GDAL's VRT driver only parses it comma-separated, so the writer
+    uses :func:`comma_list` there and follows the driver.
     """
     return " ".join(str(int(v)) for v in values)
 

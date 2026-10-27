@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""XSD validation — run once ``schema/gdalvrt.xsd`` is in place.
+"""XSD validation against the pinned ``schema/gdalvrt.xsd``.
 
 Reads every ``*.vrt`` emitted by the smoke tests and validates it against
-the pinned ``release/3.12`` schema.
+the pinned schema (see schema/README.md).
 
 Usage
 -----

@@ -19,13 +19,15 @@ dependencies = [
 # CRS auto-detection from CF metadata.
 cf = ["cf_xarray"]
 # XSD validation in tests.
-test = ["lxml", "netCDF4", "pytest"]
+test = ["lxml", "netCDF4", "h5netcdf", "dask", "pytest"]
+# GDAL round-trip tests (tests/test_gdal_roundtrip.py) also need osgeo.gdal,
+# best installed from conda-forge; they are skipped without it.
 # rioxarray as an additional CRS source.
 rio = ["rioxarray"]
 
 [project.urls]
-Homepage = "https://github.com/hypertidy/xvrt"
-Plan = "https://github.com/hypertidy/xvrt/blob/main/mdim-vrt-writer-plan.md"
+Homepage = "https://github.com/rgdal-dev/xvrt"
+Plan = "https://github.com/rgdal-dev/xvrt/blob/main/mdim-vrt-writer-plan.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["xvrt"]
