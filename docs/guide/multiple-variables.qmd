@@ -1,0 +1,66 @@
+---
+title: "Multiple variables"
+---
+
+```{python}
+#| echo: false
+import sys, warnings
+sys.path.insert(0, "..")
+warnings.simplefilter("ignore", UserWarning)
+```
+
+Every data variable in the Dataset becomes an `<Array>` in the same VRT,
+sharing the dimensions and coordinate arrays.
+
+## Variables in the same files
+
+```{python}
+import xarray as xr
+from xvrt import write_mdim_vrt
+from _fixtures import daily_netcdf
+
+paths = daily_netcdf(n=3, variables=("sst", "anom", "err"))
+ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+out = write_mdim_vrt(ds, paths, paths[0].parent / "multi.vrt",
+                     composition="concat", concat_dim="time")
+
+from osgeo import gdal
+gdal.UseExceptions()
+gdal.OpenEx(str(out), gdal.OF_MULTIDIM_RASTER).GetRootGroup().GetMDArrayNames()
+```
+
+- `variables=["sst", "err"]` writes a subset, in that order. By default all
+  data variables are written except CF `grid_mapping` containers, whose
+  content goes into `<SRS>`.
+- Variables without the composition dimension (a static land mask, say) are
+  read from the first source.
+- `block_size=` takes a dict keyed by variable; a plain list applies only when
+  every variable has that rank.
+- If the Dataset's names differ from the files', give dict-form sources an
+  `"arrays": {"temp": "/sst"}` mapping. A single `"array"` is refused when
+  several variables are written, because it would be ambiguous.
+
+## Variables in separate files
+
+Many collections keep each variable in its own file per time step. Pass a
+mapping from variable name to its own source list:
+
+```{python}
+sst_files = daily_netcdf(n=3, variables=("sst",))
+err_files = daily_netcdf(n=3, variables=("err",))
+ds = xr.merge([
+    xr.open_mfdataset(sst_files, combine="nested", concat_dim="time"),
+    xr.open_mfdataset(err_files, combine="nested", concat_dim="time"),
+])
+out = write_mdim_vrt(ds, {"sst": sst_files, "err": err_files},
+                     sst_files[0].parent / "per-variable.vrt",
+                     composition="concat", concat_dim="time")
+g = gdal.OpenEx(str(out), gdal.OF_MULTIDIM_RASTER).GetRootGroup()
+{n: g.OpenMDArray(n).GetDimensions()[0].GetSize() for n in ("sst", "err")}
+```
+
+Each list is resolved on its own, so lists may differ in length when sources
+carry an `"index"` (a variable that starts later, or has missing days): see
+[Compositions](compositions.qmd#gaps-placing-sources-by-index) and the
+[GHRSST MUR example](../examples/ghrsst-mur.qmd), where one of five variables
+exists for only part of the record.

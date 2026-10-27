@@ -1,0 +1,62 @@
+---
+title: "Packed data and time"
+---
+
+```{python}
+#| echo: false
+import sys, warnings
+sys.path.insert(0, "..")
+warnings.simplefilter("ignore", UserWarning)
+```
+
+A VRT points at the bytes in the source files. GDAL's multidimensional VRT
+does not apply xarray's CF decoding, so whatever xarray decoded on open has to
+be described again for GDAL. xvrt does this from the Dataset's `.encoding`.
+
+## Scale, offset and nodata
+
+Gridded products are often stored as `int16` with `scale_factor`,
+`add_offset` and `_FillValue`. With xarray's default `mask_and_scale=True`
+the in-memory values are floats and the packing has moved out of `.attrs`
+into `.encoding`:
+
+```{python}
+import xarray as xr
+from _fixtures import daily_netcdf
+
+paths = daily_netcdf(n=2)
+ds = xr.open_mfdataset(paths, combine="nested", concat_dim="time")
+print(ds.sst.dtype, {k: ds.sst.encoding[k] for k in ("dtype", "scale_factor", "_FillValue")})
+```
+
+xvrt declares the storage dtype and lets GDAL carry the decoding:
+
+```{python}
+from xvrt import write_mdim_vrt
+
+out = write_mdim_vrt(ds, paths, paths[0].parent / "packed.vrt",
+                     composition="concat", concat_dim="time")
+print("\n".join(l for l in out.read_text().splitlines()
+                if any(t in l for t in ("DataType>Int16", "Scale", "Offset", "NoData"))))
+```
+
+Declaring the decoded `Float64` with no `<Scale>` instead would hand back raw
+counts as if they were physical values. `scale_factor` and `add_offset` are
+not repeated as `<Attribute>`s, so readers that decode from attributes do not
+apply them twice. With `mask_and_scale=False` the packing stays in `.attrs`
+and the result is the same.
+
+## Time
+
+Decoded `datetime64` (or cftime) coordinates are encoded back to numbers with
+xarray's own CF encoder, using the original `units` and `calendar` from
+`.encoding`:
+
+```{python}
+print(ds.time.encoding["units"])
+print("\n".join(l for l in out.read_text().splitlines()[:12] if "time" in l or "Unit" in l))
+```
+
+This keeps an origin with a time of day (`12:00:00` here) and non-standard
+calendars such as `noleap`. Without stored units the fallback is
+`days since 1970-01-01`.

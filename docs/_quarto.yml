@@ -1,0 +1,58 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "xvrt"
+  description: "Write GDAL multidimensional VRT from xarray Datasets and STAC catalogues."
+  site-url: https://rgdal-dev.github.io/xvrt/
+  repo-url: https://github.com/rgdal-dev/xvrt
+  repo-actions: [source, issue]
+  page-navigation: true
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: get-started.qmd
+        text: Get started
+      - text: Guide
+        menu:
+          - guide/compositions.qmd
+          - guide/packed-data.qmd
+          - guide/multiple-variables.qmd
+          - guide/raster-sources.qmd
+          - guide/from-stac.qmd
+          - guide/crs.qmd
+      - text: Examples
+        menu:
+          - examples/ghrsst-mur.qmd
+      - href: reference.qmd
+        text: Reference
+    right:
+      - icon: github
+        href: https://github.com/rgdal-dev/xvrt
+  sidebar:
+    - title: Guide
+      contents:
+        - guide/compositions.qmd
+        - guide/packed-data.qmd
+        - guide/multiple-variables.qmd
+        - guide/raster-sources.qmd
+        - guide/from-stac.qmd
+        - guide/crs.qmd
+
+format:
+  html:
+    theme:
+      light: cosmo
+      dark: darkly
+    toc: true
+    code-copy: true
+    code-overflow: wrap
+    highlight-style: github
+
+execute:
+  freeze: auto
+  warning: false
+
+jupyter: python3

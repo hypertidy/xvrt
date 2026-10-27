@@ -1,0 +1,237 @@
+---
+title: "GHRSST MUR on source.coop"
+subtitle: "8913 days of five variables, one VRT, built from a catalogue"
+---
+
+```{python}
+#| echo: false
+import warnings
+warnings.simplefilter("ignore", UserWarning)
+```
+
+The [GHRSST](https://www.ghrsst.org/) Multi-scale Ultra-high Resolution (MUR)
+sea surface temperature analysis is a daily global grid at 0.01 degrees
+(17999 x 36000 cells) from 2002-06-01. A cloud-optimised copy is published
+on [source.coop](https://source.coop/ausantarctic/ghrsst-mur-v2) as five
+Cloud Optimized GeoTIFFs per day, one per variable, with a STAC catalogue
+in stac-geoparquet form. The pipeline that produces it is
+[AustralianAntarcticDivision/ghrsst-cogger](https://github.com/AustralianAntarcticDivision/ghrsst-cogger).
+
+This page builds one multidimensional VRT over the whole collection from the
+catalogue alone, then uses it for a regional map, a 24-year pixel series, the
+start of the anomaly record, and a sea ice snapshot.
+
+## The catalogue
+
+```{python}
+import pyarrow.parquet as pq
+import urllib.request, io
+
+PARQUET = "https://data.source.coop/ausantarctic/ghrsst-mur-v2/ghrsst-mur-v2.parquet"
+req = urllib.request.Request(PARQUET, headers={"User-Agent": "xvrt-docs"})
+with urllib.request.urlopen(req) as r:
+    table = pq.read_table(io.BytesIO(r.read()))
+
+rows = table.select(["datetime", "assets"]).to_pylist()
+rows.sort(key=lambda r: r["datetime"])
+print(f"{len(rows)} items, {rows[0]['datetime']:%Y-%m-%d} .. {rows[-1]['datetime']:%Y-%m-%d}")
+```
+
+Each item is one day; each asset is one COG. Not every variable covers the
+whole record:
+
+```{python}
+import pandas as pd
+
+coverage = []
+for key in rows[-1]["assets"]:
+    days = [r["datetime"] for r in rows if r["assets"].get(key)]
+    band = rows[-1]["assets"][key]["raster:bands"][0]
+    coverage.append({"asset": key, "days": len(days),
+                     "first": f"{days[0]:%Y-%m-%d}", "last": f"{days[-1]:%Y-%m-%d}",
+                     "dtype": band.get("data_type"), "scale": band.get("scale"),
+                     "offset": band.get("offset"), "unit": band.get("unit")})
+pd.DataFrame(coverage)
+```
+
+## Build the VRT
+
+```{python}
+import time
+from pathlib import Path
+from xvrt import from_stac
+
+t0 = time.time()
+vrt_path = from_stac(PARQUET, Path("ghrsst-mur-v2.vrt"), block_size=[1, 512, 512])
+print(f"{time.time() - t0:.1f} s, {vrt_path.stat().st_size / 1e6:.1f} MB")
+```
+
+No COG was opened: the grid, CRS, dates and each variable's storage came from
+the catalogue. Days without a file for a variable are left empty and read as
+nodata. The VRT is plain XML; its head:
+
+```{python}
+lines = vrt_path.read_text().splitlines()
+print("\n".join(l[:110] for l in lines[:28]))
+```
+
+and a typical source:
+
+```{python}
+i = next(k for k, l in enumerate(lines) if "<Source>" in l)
+print("\n".join(l[:140] for l in lines[i:i + 7]))
+```
+
+## Open it
+
+```{python}
+from osgeo import gdal
+
+gdal.UseExceptions()
+ds = gdal.OpenEx(str(vrt_path), gdal.OF_MULTIDIM_RASTER)
+root = ds.GetRootGroup()
+for name in root.GetMDArrayNames():
+    a = root.OpenMDArray(name)
+    shape = [d.GetSize() for d in a.GetDimensions()]
+    print(f"{name:17s} {shape}  unit={a.GetUnit()!r}")
+```
+
+The grid and dates come back as coordinate arrays. A few helpers turn
+longitude, latitude and dates into array indices, and temperatures into
+degrees Celsius. The unit is whatever the catalogue records, read here rather
+than assumed; only absolute temperatures are shifted from kelvin, not
+differences such as the anomaly or the error estimate.
+
+```{python}
+import numpy as np
+
+times = np.datetime64("1970-01-01") + root.OpenMDArray("time").ReadAsArray().astype("int64").astype("timedelta64[D]")
+
+def col(lon): return int(round((lon + 179.995) / 0.01))
+def row(lat): return int(round((89.995 - lat) / 0.01))
+def day(date): return int(np.where(times == np.datetime64(date))[0][0])
+
+def celsius(values, unit, absolute=True):
+    kelvin = unit.lower() in ("kelvin", "k")
+    return values - 273.15 if (kelvin and absolute) else values
+
+sst = root.OpenMDArray("analysed_sst")
+print(times[[0, -1]], sst.GetUnit())
+```
+
+## A regional map for one day
+
+The Tasman Sea and Southern Ocean around Tasmania on the most recent day: one
+window of one COG.
+
+```{python}
+#| fig-cap: "Analysed SST, 140-160E 35-50S, most recent day in the catalogue."
+import matplotlib.pyplot as plt
+
+west, east, north, south = 140, 160, -35, -50
+t0 = time.time()
+window = sst.GetUnscaled().ReadAsArray(
+    array_start_idx=[len(times) - 1, row(north), col(west)],
+    count=[1, row(south) - row(north), col(east) - col(west)],
+)[0]
+print(f"read {window.shape} in {time.time() - t0:.1f} s")
+
+fig, ax = plt.subplots(figsize=(8, 6))
+im = ax.imshow(celsius(window, sst.GetUnit()), extent=[west, east, south, north],
+               cmap="RdYlBu_r", origin="upper")
+fig.colorbar(im, ax=ax, label="degrees C", shrink=0.8)
+ax.set_title(f"analysed_sst {times[-1]}")
+ax.set_xlabel("longitude"); ax.set_ylabel("latitude")
+plt.show()
+```
+
+## One pixel through 24 years
+
+Mid-January at 44S 150E, east of Tasmania, for every January in the record.
+Each value comes from a different COG, and only those 24 files are opened:
+the time is spent on one remote request per day, not on the size of the
+collection.
+
+```{python}
+#| fig-cap: "Analysed SST on 15 January each year at 44S 150E."
+def read_point(var, t, y, x):
+    a = root.OpenMDArray(var)
+    v = a.GetUnscaled().ReadAsArray(array_start_idx=[t, y, x], count=[1, 1, 1]).item()
+    return celsius(v, a.GetUnit(), absolute=(var == "analysed_sst"))
+
+januaries = [i for i, d in enumerate(times) if str(d).endswith("-01-15")]
+t0 = time.time()
+series = [read_point("analysed_sst", i, row(-44), col(150)) for i in januaries]
+print(f"{len(series)} days in {time.time() - t0:.1f} s")
+
+years = [int(str(times[i])[:4]) for i in januaries]
+fig, ax = plt.subplots(figsize=(8, 3.5))
+ax.plot(years, series, marker="o")
+ax.set_ylabel("degrees C"); ax.set_title("15 January SST at 44S 150E")
+plt.show()
+```
+
+::: {.callout-note}
+A strided read (`array_step=[365, 1, 1]`) would be the natural way to ask for
+one day per year, but in GDAL 3.13 a stride that crosses from one source to
+the next fails with `arrayStartIdx[0] = ... >= 1`; stepping within a single
+source works. Reading the chosen days individually, as above, avoids it.
+:::
+
+## Where a variable starts
+
+`sst_anomaly` exists only from 2014-01-01. In the VRT it is one array over the
+whole record; days before its first file are nodata:
+
+```{python}
+dates = ["2013-12-30", "2013-12-31", "2014-01-01", "2014-01-02", "2014-01-03"]
+sst_vals = [read_point("analysed_sst", day(d), row(-44), col(150)) for d in dates]
+anom_vals = [read_point("sst_anomaly", day(d), row(-44), col(150)) for d in dates]
+pd.DataFrame({"date": dates, "analysed_sst": np.round(sst_vals, 3),
+              "sst_anomaly": np.round(anom_vals, 3)})
+```
+
+## Sea ice off East Antarctica
+
+`sea_ice_fraction` off Prydz Bay (62-70S, 70-80E) on 15 September 2025, near
+the winter maximum:
+
+```{python}
+#| fig-cap: "Sea ice fraction, 70-80E 62-70S, 2025-09-15."
+ice = root.OpenMDArray("sea_ice_fraction")
+west, east, north, south = 70, 80, -62, -70
+frac = ice.GetUnscaled().ReadAsArray(
+    array_start_idx=[day("2025-09-15"), row(north), col(west)],
+    count=[1, row(south) - row(north), col(east) - col(west)],
+)[0]
+fig, ax = plt.subplots(figsize=(8, 6))
+im = ax.imshow(frac, extent=[west, east, south, north], cmap="Blues_r", vmin=0, vmax=1)
+fig.colorbar(im, ax=ax, label="fraction", shrink=0.8)
+ax.set_title("sea_ice_fraction 2025-09-15  (blank: land or no ice)")
+plt.show()
+```
+
+## The same cube in xarray
+
+Any reader of GDAL's multidimensional API can use the VRT. With an xarray
+backend for GDAL the five arrays become one lazy Dataset; selections are read
+on demand.
+
+```{python}
+import xarray as xr
+
+cube = xr.open_dataset(vrt_path, engine="gdalxarray")
+cube
+```
+
+```{python}
+v = cube.analysed_sst.sel(time="2025-02-14").sel(y=-44, x=150, method="nearest").load()
+float(celsius(v.values, cube.analysed_sst.attrs.get("units", "")))
+```
+
+## Keeping it current
+
+The VRT is a function of the catalogue, so rebuilding it whenever the
+catalogue changes keeps it current: here that takes a few seconds for the
+whole record, and it can be published next to the catalogue it was built
+from.
