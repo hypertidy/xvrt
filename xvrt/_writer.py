@@ -330,6 +330,9 @@ def _resolve_stack_has_dim(
     """
     from dataclasses import replace
 
+    sources = [replace(s, extra={**s.extra, "has_dim": False})
+               if s.extra.get("band") is not None and "has_dim" not in s.extra
+               else s for s in sources]
     if all("has_dim" in s.extra for s in sources):
         return sources
     probe = next(s for s in sources if "has_dim" not in s.extra)
@@ -661,9 +664,7 @@ def _axis_role(ds: xr.Dataset, dim: str) -> tuple[str | None, str | None]:
     override by hand-editing or by attaching CF ``axis``/``standard_name``
     attrs to the coord.
     """
-    if dim not in ds.coords:
-        return (None, None)
-    attrs = ds.coords[dim].attrs
+    attrs = ds.coords[dim].attrs if dim in ds.coords else {}
     axis = attrs.get("axis", "").upper()
     stdname = attrs.get("standard_name", "").lower()
     if axis == "T" or "time" in stdname:
@@ -678,6 +679,14 @@ def _axis_role(ds: xr.Dataset, dim: str) -> tuple[str | None, str | None]:
     if axis == "X" or stdname in {"longitude", "projection_x_coordinate"}:
         return ("HORIZONTAL_X", "EAST")
     if axis == "Y" or stdname in {"latitude", "projection_y_coordinate"}:
+        return ("HORIZONTAL_Y", "NORTH")
+    # No CF attrs (e.g. readers that drop them): fall back on common names.
+    low = str(dim).lower()
+    if low in {"time", "t"}:
+        return ("TEMPORAL", None)
+    if low in _X_NAMES:
+        return ("HORIZONTAL_X", "EAST")
+    if low in _Y_NAMES:
         return ("HORIZONTAL_Y", "NORTH")
     return (None, None)
 
@@ -1085,16 +1094,28 @@ def _resolve_block_size(
     data_var: str,
 ) -> list[int] | None:
     if block_size is None:
-        if da.chunks is None:
-            return None
-        # ds.chunks is a tuple-of-tuples per dim; use the first chunk of each.
-        return [int(cs[0]) for cs in da.chunks]
+        if da.chunks is not None:
+            # da.chunks is a tuple-of-tuples per dim; use the first chunk of each.
+            return [int(cs[0]) for cs in da.chunks]
+        # Backends declare their native chunking in encoding (xarray's
+        # "preferred_chunks", or netCDF4's "chunksizes").
+        pc = da.encoding.get("preferred_chunks")
+        if isinstance(pc, Mapping) and all(d in pc for d in da.dims):
+            return [int(pc[d]) for d in da.dims]
+        cs = da.encoding.get("chunksizes")
+        if cs is not None and len(cs) == da.ndim:
+            return [int(c) for c in cs]
+        return None
     if isinstance(block_size, Mapping):
         bs = block_size.get(data_var)
         if bs is None:
             return None
         return list(map(int, bs))
     return list(map(int, block_size))
+
+
+def _is_band_source(src: Source) -> bool:
+    return src.extra.get("band") is not None
 
 
 def _emit_sources(
@@ -1107,15 +1128,29 @@ def _emit_sources(
     concat_dim: str | None,
 ) -> None:
     dims = list(da.dims)
+    shape = [int(n) for n in da.shape]
+
+    def slab(el: ET.Element, count: list[int]) -> None:
+        # Stating each source's extent lets GDAL open only the sources a
+        # read touches; without it every source is opened (for remote COGs,
+        # a HEAD plus a header GET each) to learn its shape.
+        X.sub(el, "SourceSlab", offset=X.comma_list([0] * len(count)),
+              count=X.comma_list(count), step=X.comma_list([1] * len(count)))
+
+    def head(el: ET.Element, s: Source, array: str) -> None:
+        X.sub(el, "SourceFilename", text=s.path, relativeToVRT=s.relative_to_vrt)
+        if _is_band_source(s):
+            X.sub(el, "SourceBand", text=str(int(s.extra["band"])))
+        else:
+            X.sub(el, "SourceArray", text=_full_array_name(array))
 
     if concat_dim not in dims:
         # Static variable (no composition dim): the first source supplies it.
         s = sources[0]
         src_el = X.sub(arr, "Source")
-        X.sub(src_el, "SourceFilename", text=s.path,
-              relativeToVRT=s.relative_to_vrt)
-        X.sub(src_el, "SourceArray", text=_full_array_name(arrays[0]))
+        head(src_el, s, arrays[0])
         if dims:
+            slab(src_el, shape)
             X.sub(src_el, "DestSlab", offset=X.comma_list([0] * len(dims)))
         return
 
@@ -1125,17 +1160,35 @@ def _emit_sources(
     for s, array in zip(sources, arrays):
         size_along = 1 if composition == "stack" else int(s.size)  # type: ignore[arg-type]
         src_el = X.sub(arr, "Source")
-        X.sub(src_el, "SourceFilename", text=s.path,
-              relativeToVRT=s.relative_to_vrt)
-        X.sub(src_el, "SourceArray", text=_full_array_name(array))
-        if composition == "stack" and not s.extra.get("has_dim", False):
+        head(src_el, s, array)
+        if _is_band_source(s):
+            # A classic raster band is 2D (y, x). SourceTranspose maps the
+            # destination dims onto it, -1 marking the new length-1 axis.
+            if len(dims) != 3:
+                raise VrtWriterError(
+                    f"band source {s.path}: a 2D band can only fill a 3D "
+                    f"array (stack dim + 2 raster dims); {da.name!r} has "
+                    f"dims {tuple(dims)}."
+                )
+            order, k = [], 0
+            for i in range(len(dims)):
+                if i == comp_axis:
+                    order.append(-1)
+                else:
+                    order.append(k)
+                    k += 1
+            X.sub(src_el, "SourceTranspose", text=",".join(map(str, order)))
+        elif composition == "stack" and not s.extra.get("has_dim", False):
             # A stacked source lacks the new dim. GDAL refuses to read a
             # source whose rank differs from the destination ("Inconsistent
             # number of dimensions"), so insert a length-1 axis at the
             # stack position with a view.
             X.sub(src_el, "SourceView",
                   text="[" + ":," * comp_axis + "newaxis,...]")
-        # DestSlab always emitted (plan rule — zeros included).
+        count = list(shape)
+        count[comp_axis] = size_along
+        slab(src_el, count)
+        # DestSlab always emitted (plan rule, zeros included).
         offsets = [0] * len(dims)
         offsets[comp_axis] = offset_so_far
         X.sub(src_el, "DestSlab", offset=X.comma_list(offsets))
