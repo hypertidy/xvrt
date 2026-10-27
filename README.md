@@ -4,7 +4,7 @@ Write [GDAL multidimensional VRT](https://gdal.org/en/stable/drivers/raster/vrt_
 from xarray Datasets and STAC catalogues. Pure Python: no GDAL needed to
 write.
 
-Documentation: <https://rgdal-dev.github.io/xvrt/>
+Documentation: <https://hypertidy.github.io/xvrt/>
 
 A multidimensional VRT is a small XML file that describes a collection of
 files as one n-dimensional dataset: which file supplies which slab of which
