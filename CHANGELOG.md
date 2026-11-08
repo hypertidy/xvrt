@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0
+
+- `stack_rasters()`: stack 2D raster files (GeoTIFF/COG, local or URL)
+  along a new dimension without constructing an xarray input -- the
+  vrtstack mode. Dimension values come from a sequence, a filename regex
+  (with optional `format=` date parsing), a callable, or `start=`/`step=`;
+  the grid comes from the first file (rasterio or osgeo.gdal) or an
+  explicit `grid=` so no file is opened.
+- `open_raster_stack()`: the same, returning an xarray Dataset via a
+  GDAL-backed engine (default `gdalxarray`).
+- README: links that pointed at repository-relative paths are absolute,
+  so they work on PyPI's project page.
+
 ## 0.1.0
 
 First release.

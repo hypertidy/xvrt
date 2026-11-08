@@ -6,11 +6,11 @@ Enables:
     ds.vrt.write_mdim(path, sources=[...], composition="stack", concat_dim="time")
 
 Mirrors the ``rioxarray``/``cf_xarray`` accessor patterns. The Dataset stays
-a plain ``xr.Dataset`` everywhere else — this layer just provides a
+a plain ``xr.Dataset`` everywhere else -- this layer just provides a
 method-call spelling of :func:`xvrt.write_mdim_vrt`.
 
 Importing this module registers the accessor with xarray's global registry.
-The core ``xvrt`` package does **not** import it for you — opt in explicitly.
+The core ``xvrt`` package does **not** import it for you -- opt in explicitly.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from ._coords import CoordMode
 
 @xr.register_dataset_accessor("vrt")
 class VrtAccessor:
-    """``ds.vrt`` — write multidim VRT from an xarray Dataset."""
+    """``ds.vrt`` -- write multidim VRT from an xarray Dataset."""
 
     def __init__(self, ds: xr.Dataset) -> None:
         self._ds = ds

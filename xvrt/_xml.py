@@ -125,7 +125,7 @@ def sub(parent: ET.Element, tag: str, text: str | None = None, **attrs) -> ET.El
 
 
 def _attrstr(v) -> str:
-    # Attributes are always strings in XML; bool → "0"/"1", ints → str.
+    # Attributes are always strings in XML; bool -> "0"/"1", ints -> str.
     if isinstance(v, bool):
         return "1" if v else "0"
     return str(v)
@@ -144,7 +144,7 @@ def int_list(values: Iterable[int]) -> str:
 def comma_list(values: Iterable[int]) -> str:
     """Comma-separated integer list.
 
-    Used for ``<DestSlab offset=...>`` — GDAL's mdim VRT driver parses the
+    Used for ``<DestSlab offset=...>`` -- GDAL's mdim VRT driver parses the
     offset attribute as comma-separated per-dimension offsets.
     """
     return ",".join(str(int(v)) for v in values)
@@ -154,7 +154,7 @@ def repr_double(x: float) -> str:
     """Shortest round-trippable repr of a double.
 
     Python's ``repr(float)`` gives the shortest string that round-trips to the
-    same IEEE-754 value. That's what we want for coord fidelity —
+    same IEEE-754 value. That's what we want for coord fidelity --
     ``%.17g``-style emission produces spurious trailing digits.
     """
     return repr(float(x))

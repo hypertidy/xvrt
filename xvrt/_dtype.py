@@ -1,7 +1,7 @@
-"""numpy dtype → GDAL VRT DataType string.
+"""numpy dtype -> GDAL VRT DataType string.
 
-In the multidim XSD, ``<DataType>`` is ``xs:string`` — not constrained to the
-classic ``DataTypeType`` enumeration — so technically we could emit anything.
+In the multidim XSD, ``<DataType>`` is ``xs:string`` -- not constrained to the
+classic ``DataTypeType`` enumeration -- so technically we could emit anything.
 In practice we stick to canonical GDAL names so the output round-trips through
 ``osgeo.gdal``'s mdim API without surprises.
 """
@@ -12,7 +12,7 @@ import numpy as np
 from ._errors import VrtWriterError
 
 
-# Mirrors ``_gdal_to_vrt_dtype`` in vrtstack/R. Kept aligned deliberately —
+# Mirrors ``_gdal_to_vrt_dtype`` in vrtstack/R. Kept aligned deliberately --
 # the two writers should produce the same <DataType> string for the same
 # logical dtype.
 _NUMPY_TO_VRT = {

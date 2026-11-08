@@ -96,7 +96,7 @@ def write_mdim_vrt(
         )
     if composition == "mosaic":
         raise NotImplementedError(
-            "mosaic composition is v1 scope — not implemented yet."
+            "mosaic composition is v1 scope -- not implemented yet."
         )
     if composition in ("stack", "concat") and concat_dim is None:
         raise VrtWriterError(
@@ -216,7 +216,7 @@ def _check_array_name_collisions(ds: xr.Dataset) -> None:
     legal in xarray but emits two children with the same name in the VRT.
 
     Dim-coords (where ``dim_name == coord_name``) are the normal case and
-    are NOT a collision — they're exactly how indexing variables are
+    are NOT a collision -- they're exactly how indexing variables are
     expressed in the XSD. We only flag real duplicates.
     """
     dims = set(ds.dims)
@@ -259,7 +259,7 @@ def _resolve_crs(
         if isinstance(v, str) and v.strip():
             return v
 
-    # Try rio accessor if available — non-mandatory dep.
+    # Try rio accessor if available -- non-mandatory dep.
     try:
         import rioxarray  # noqa: F401
         maybe = da.rio.crs
@@ -313,7 +313,7 @@ def _check_stack(
     if new_dim not in da.dims:
         raise VrtWriterError(
             f"composition='stack': new dim {new_dim!r} must be present in "
-            f"ds[{data_var!r}].dims — it isn't. dims are {da.dims}."
+            f"ds[{data_var!r}].dims -- it isn't. dims are {da.dims}."
         )
     if new_dim not in ds.coords:
         raise VrtWriterError(
@@ -408,7 +408,7 @@ def _resolve_concat_sizes(
     """Fill in ``Source.size`` along the concat dim by any means available.
 
     Priority:
-      1. ``explicit`` — the ``sizes=`` kwarg, one int per source
+      1. ``explicit`` -- the ``sizes=`` kwarg, one int per source
       2. ``Source.size`` already set (dict-form input)
       3. ``ds[data_var].chunks[concat_axis]`` if #chunks == #sources
          (common case for ``open_mfdataset`` default, one chunk per file)
@@ -451,7 +451,7 @@ def _resolve_concat_sizes(
     # 3.5. Uniform guess: if the total divides evenly by n_sources and we
     # still don't know sizes, assume each source contributes total/n along
     # concat_dim. Fires for daily-files-one-timestep-each patterns (OISST
-    # etc). Warns — this is a guess, not a fact.
+    # etc). Warns -- this is a guess, not a fact.
     if any(sz is None for sz in resolved_sizes) and axis is not None:
         total = int(ds.sizes[concat_dim])
         if total % n == 0:
@@ -474,7 +474,7 @@ def _resolve_concat_sizes(
 
     # 4. Fallback: open each source without a size, read its concat dim.
     if any(sz is None for sz in resolved_sizes):
-        # Lazy import — only pay the cost when we need to.
+        # Lazy import -- only pay the cost when we need to.
         import xarray as _xr  # local alias clarifies this is a fallback path
         for i, (src, sz) in enumerate(zip(sources, resolved_sizes)):
             if sz is not None:
@@ -606,7 +606,7 @@ def _build_vrt(
     # Dataset-level <Attribute>s (ds.attrs).
     _emit_attrs(grp, ds.attrs)
 
-    # Coord <Array>s — one per 1D coord that matches a dim.
+    # Coord <Array>s -- one per 1D coord that matches a dim.
     for d in dims:
         if d not in ds.coords:
             continue
@@ -728,7 +728,7 @@ def _emit_attrs(parent: ET.Element, attrs: Mapping[str, Any]) -> None:
 
     Per the plan's Open Questions: warn and filter on unsupported types
     rather than raise. Here we silently drop attrs whose values aren't
-    representable — a future revision should surface a warning list.
+    representable -- a future revision should surface a warning list.
     """
     for name, val in attrs.items():
         dt, items = _attr_dtype_and_values(val)
@@ -779,7 +779,7 @@ def _reencode_datetime_coord(da: xr.DataArray) -> xr.DataArray:
     when it decodes on open (e.g. ``"seconds since 1978-01-01"``). We use
     that to round-trip faithfully so reading the VRT reproduces the same
     timestamps. If ``encoding["units"]`` is absent we default to
-    ``"days since 1970-01-01"`` — a benign choice since the numeric values
+    ``"days since 1970-01-01"`` -- a benign choice since the numeric values
     still represent the same moments in time.
     """
     from xarray.coding.times import encode_cf_datetime
@@ -896,7 +896,7 @@ def _emit_coord_array(
             for v in values.tolist():
                 X.sub(ivv, "Value", text=str(v))
     elif chosen == "source":
-        # Point at the first source — caller is promising the coord is there
+        # Point at the first source -- caller is promising the coord is there
         # and identical across sources (R3 ensures consistency for spatial
         # dims in stack/concat; for the concat dim we inline always).
         src = sources[0]
@@ -1009,10 +1009,10 @@ def _emit_data_array(
             if np.isfinite(fv):
                 X.sub(arr, "NoDataValue", text=X.repr_double(fv))
             else:
-                # nan/inf — XSD allows the literal "nan"/"NAN".
+                # nan/inf -- XSD allows the literal "nan"/"NAN".
                 X.sub(arr, "NoDataValue", text="nan" if np.isnan(fv) else str(fv))
         except (TypeError, ValueError, IndexError):
-            pass  # non-numeric fill — skip rather than emit garbage
+            pass  # non-numeric fill -- skip rather than emit garbage
     off = packing["offset"]
     if off is not None:
         X.sub(arr, "Offset", text=X.repr_double(float(off)))

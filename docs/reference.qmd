@@ -35,7 +35,8 @@ def render(obj, name):
     print("\n".join(out).replace("\n:   \n", "\n:   "))
     print()
 
-for name in ("write_mdim_vrt", "from_stac", "encode_datetime_coord"):
+for name in ("write_mdim_vrt", "from_stac", "stack_rasters",
+             "open_raster_stack", "encode_datetime_coord"):
     render(getattr(xvrt, name), name)
 
 print("## `VrtWriterError`\n")

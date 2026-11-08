@@ -36,7 +36,7 @@ _REGULAR_ATOL = 1e-15
 def detect_regular(values: np.ndarray) -> tuple[float, float] | None:
     """Return (start, increment) if the values are uniformly spaced, else None.
 
-    Uses :func:`numpy.isclose` with tight tolerances — suitable for real-world
+    Uses :func:`numpy.isclose` with tight tolerances -- suitable for real-world
     coord axes (daily time stamps, regular lat/lon grids) but strict enough
     that float drift in concatenated chunks won't be misidentified.
 
@@ -51,7 +51,7 @@ def detect_regular(values: np.ndarray) -> tuple[float, float] | None:
     first = diffs[0]
     if not np.all(np.isclose(diffs, first, rtol=_REGULAR_RTOL, atol=_REGULAR_ATOL)):
         return None
-    # Reject zero increment — degenerate.
+    # Reject zero increment -- degenerate.
     if first == 0:
         return None
     # Increment from the end points, not the first difference: the first
