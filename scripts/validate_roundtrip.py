@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Round-trip validator — run where GDAL 3.12 is available.
+"""Round-trip validator -- run where GDAL 3.12 is available.
 
 Usage
 -----
@@ -15,8 +15,8 @@ standalone entry point for users / CI to run locally.
 
 Exit codes
 ----------
-0 — all checks passed
-1 — mismatch or unexpected error
+0 -- all checks passed
+1 -- mismatch or unexpected error
 """
 from __future__ import annotations
 

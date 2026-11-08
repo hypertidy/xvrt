@@ -19,3 +19,4 @@ docs/.quarto/
 docs/**/*_files/
 docs/**/*.quarto_ipynb
 docs/**/*.vrt
+.venv/

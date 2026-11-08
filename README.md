@@ -65,6 +65,29 @@ from_stac("https://data.source.coop/ausantarctic/ghrsst-mur-v2/ghrsst-mur-v2.par
 For the GHRSST MUR collection that is five arrays over 8913 days in a few
 seconds.
 
+## From raster files
+
+`stack_rasters()` stacks 2D rasters (GeoTIFF/COG, local or `/vsicurl/`)
+along a new dimension, no xarray input needed. The grid is read from the
+first file (via `rasterio` or `osgeo.gdal`, whichever imports), or passed
+explicitly with `grid=` so nothing is opened at all:
+
+```python
+from xvrt import stack_rasters
+
+stack_rasters(
+    [f"soil_{d}cm.tif" for d in (0, 30, 100)],
+    "soil.vrt",
+    dim="depth", values=[0, 30, 100], units="cm",
+)
+```
+
+Dimension values can be given directly, extracted from filenames with a
+regex (one capture group, optional `format=` strptime for dates), or as
+`start=`/`step=` for a regular axis. `open_raster_stack()` does the same
+and returns the result as an xarray Dataset (needs a GDAL-backed reader
+such as `gdalxarray`).
+
 ## What it handles
 
 - **Compositions:** `concat` (files already have the dimension) and `stack`
@@ -113,8 +136,10 @@ validates it against GDAL's schema (`schema/gdalvrt.xsd`); it is skipped when
 micromamba create -n xvrt -c conda-forge python gdal libgdal-netcdf xarray netcdf4 h5netcdf dask lxml pyarrow pyproj pytest
 ```
 
-The design notes are in [mdim-vrt-writer-plan.md](mdim-vrt-writer-plan.md);
-the documentation site source is in [docs/](docs/).
+The design notes are in
+[mdim-vrt-writer-plan.md](https://github.com/hypertidy/xvrt/blob/main/mdim-vrt-writer-plan.md);
+the documentation site source is in
+[docs/](https://github.com/hypertidy/xvrt/tree/main/docs).
 
 ## Related
 

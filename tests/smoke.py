@@ -2,7 +2,7 @@
 
 Run with: python -m tests.smoke
 
-These avoid GDAL — they build synthetic NetCDFs, open them with xarray,
+These avoid GDAL -- they build synthetic NetCDFs, open them with xarray,
 write a VRT, and structurally verify the emitted XML (XSD validation, when
 the schema is present; structural assertions unconditionally).
 """

@@ -1,9 +1,9 @@
-"""Source specification — normalise user input.
+"""Source specification -- normalise user input.
 
 Accepts:
-  - ``list[str | Path]`` — each source is a path/URL, writer infers the source
+  - ``list[str | Path]`` -- each source is a path/URL, writer infers the source
     array name per composition mode
-  - ``list[dict]`` — each dict carries ``{"path": ..., "array": ..., ...}``
+  - ``list[dict]`` -- each dict carries ``{"path": ..., "array": ..., ...}``
 
 Produces a uniform list of :class:`Source` records for the emitter.
 """
@@ -26,7 +26,7 @@ class Source:
         The string that goes into ``<SourceFilename>``. May be a local path,
         a URL with ``/vsicurl/`` prefix applied, or a plain ``/vsi*`` VSI path.
     array
-        The ``<SourceArray>`` name — the full-name of the array inside the
+        The ``<SourceArray>`` name -- the full-name of the array inside the
         source (e.g. ``"/temp"``, or ``"temp"`` for root-group arrays).
     relative_to_vrt
         Emitted as ``relativeToVRT="1"`` when True.
@@ -113,7 +113,7 @@ def _coerce_one(
     if isinstance(raw, Source):
         return raw
 
-    # R6: no open handles. Check before type dispatch — a Dataset is not a
+    # R6: no open handles. Check before type dispatch -- a Dataset is not a
     # str/Path/dict and would otherwise hit the generic "expected ..." error.
     if hasattr(raw, "variables") and hasattr(raw, "dims"):
         raise VrtWriterError(
@@ -151,7 +151,7 @@ def _coerce_one(
                  if k not in {"path", "array", "size", "relative_to_vrt"}}
     else:
         raise VrtWriterError(
-            f"source #{index}: expected str, Path, or dict — got {type(raw).__name__}"
+            f"source #{index}: expected str, Path, or dict -- got {type(raw).__name__}"
         )
 
     # Classic raster sources (GeoTIFF/COG): <SourceBand> instead of

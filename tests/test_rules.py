@@ -1,4 +1,4 @@
-"""pytest suite — rules R1..R7 and happy paths.
+"""pytest suite -- rules R1..R7 and happy paths.
 
 Runnable with ``pytest tests/test_rules.py`` once the package is installed
 (``pip install -e .``) or with ``PYTHONPATH=. pytest``.
@@ -142,7 +142,7 @@ def test_array_xsd_child_order(tmp_path):
         dref_positions = [i for i, t in enumerate(tags) if t == "DimensionRef"]
         assert dref_positions, tags
         assert dref_positions[0] == 1, (arr.get("name"), tags)
-        # Unit — when present — sits before any value-carrier / Source
+        # Unit -- when present -- sits before any value-carrier / Source
         if "Unit" in tags and ("Source" in tags or "RegularlySpacedValues" in tags
                                 or "InlineValuesWithValueElement" in tags):
             carrier_i = min(tags.index(t) for t in
@@ -180,7 +180,7 @@ def test_r4_missing_crs_warns_by_default(tmp_path):
 def test_r5_nonmonotonic_concat_raises(tmp_path):
     # Build two sources whose time coords overlap / reverse.
     p0 = _make_nc(tmp_path, 5, nt=2)  # times 5, 6
-    p1 = _make_nc(tmp_path, 0, nt=2)  # times 0, 1 — non-monotonic after concat
+    p1 = _make_nc(tmp_path, 0, nt=2)  # times 0, 1 -- non-monotonic after concat
     ds = xr.concat([xr.open_dataset(p0, decode_times=False),
                     xr.open_dataset(p1, decode_times=False)], dim="time")
     with pytest.raises(VrtWriterError, match="monotonic"):
@@ -203,7 +203,7 @@ def test_r6_open_handle_raises(tmp_path):
 def test_r7_check_function_catches_coord_datavar_collision():
     """R7 defends against malformed Datasets constructed through low-level
     APIs. xarray's public API already enforces non-collision between dims,
-    coords, and data_vars — so this test exercises the check function
+    coords, and data_vars -- so this test exercises the check function
     directly with a mock-shaped object, confirming the defence-in-depth."""
     from xvrt._writer import _check_array_name_collisions
 
@@ -249,7 +249,7 @@ def test_concat_auto_size_from_opening_sources(tmp_path):
     out = write_mdim_vrt(
         ds, [str(p) for p in paths], tmp_path / "auto.vrt",
         composition="concat", concat_dim="time", crs=WKT,
-        # no sizes=, no dict form — should auto-discover
+        # no sizes=, no dict form -- should auto-discover
     )
     root = ET.parse(out).getroot()
     arr = [a for a in root.find("Group").findall("Array") if a.find("Source") is not None][0]
@@ -270,7 +270,7 @@ def test_concat_unopenable_sources_error_message(tmp_path):
         [xr.open_dataset(p0, decode_times=False),
          xr.open_dataset(p1, decode_times=False)], dim="time",
     ).load()
-    # Point at nonexistent paths — sizes must come from step 4 (which will fail).
+    # Point at nonexistent paths -- sizes must come from step 4 (which will fail).
     bad = [str(tmp_path / "nope_0.nc"), str(tmp_path / "nope_1.nc")]
     with pytest.raises(VrtWriterError, match="sizes="):
         write_mdim_vrt(ds_loaded, bad, tmp_path / "u.vrt",
@@ -297,7 +297,7 @@ def test_mosaic_not_implemented(tmp_path):
 
 def test_datetime_coord_auto_encoded(tmp_path):
     """datetime64 time coord is auto-encoded using xarray's stashed
-    encoding['units'] — user does not need decode_times=False."""
+    encoding['units'] -- user does not need decode_times=False."""
     paths = [_make_nc(tmp_path, i, nt=1) for i in range(2)]
     pieces = [xr.open_dataset(p) for p in paths]  # default decodes time
     ds = xr.concat(pieces, dim="time")
@@ -315,7 +315,7 @@ def test_datetime_coord_auto_encoded(tmp_path):
 # --- accessor --------------------------------------------------------------
 
 def test_accessor(tmp_path):
-    import xvrt.accessor  # noqa: F401  — registers the accessor
+    import xvrt.accessor  # noqa: F401  -- registers the accessor
     ds, paths = _stack_ds(tmp_path, n=2)
     out = ds.vrt.write_mdim(
         tmp_path / "a.vrt",
